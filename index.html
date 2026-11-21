@@ -1,0 +1,1208 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0d1620">
+<meta name="description" content="Jogo de neurociência do ICB-USP: ajude a Dra. P a acertar alvos do cérebro de camundongos com Parkinson e o Dr. B a colorir o cérebro com anticorpos fluorescentes.">
+<meta property="og:title" content="Cientistas do ICB">
+<meta property="og:description" content="Jogo de neurociência para o ensino médio: estereotaxia, centros da respiração e imunofluorescência.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:,">
+<title>Cientistas do ICB · Jogo de neurociência</title>
+<style>
+html,body{margin:0;height:100%;background:#0d1620;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+#wrap{display:flex;align-items:center;justify-content:center;height:100%}
+canvas{width:min(98vw,147vh);height:auto;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.6);touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#rot{display:none;position:fixed;inset:0;background:rgba(13,22,32,.96);color:#fff;z-index:9;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:18px}
+#rot b{font-size:22px}#rot .ic{font-size:64px;animation:r 1.6s ease-in-out infinite}
+#rot button{background:#2fb37a;color:#fff;border:0;border-radius:24px;padding:12px 22px;font-size:16px;font-weight:bold}
+@keyframes r{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(90deg)}}
+@media (orientation:portrait) and (max-width:820px){body:not(.ok) #rot{display:flex}}
+</style>
+</head>
+<body>
+<div id="rot"><div class="ic">&#128241;</div><b>Gire o celular</b><div>O jogo fica melhor na horizontal.</div><button onclick="document.body.classList.add('ok')">Jogar assim mesmo</button></div>
+<div id="wrap"><canvas id="c" width="960" height="640"></canvas></div>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const W=cv.width,H=cv.height,TAU=Math.PI*2;
+const FONT='system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+let t=0;
+// ---------- áudio ----------
+let AC=null;
+function snd(f,d=.12,type='sine',vol=.12,slide=0,delay=0){
+ if(!AC)return;const s=AC.currentTime+delay,o=AC.createOscillator(),g=AC.createGain();
+ o.type=type;o.frequency.setValueAtTime(f,s);if(slide)o.frequency.linearRampToValueAtTime(Math.max(20,f+slide),s+d);
+ g.gain.setValueAtTime(vol,s);g.gain.exponentialRampToValueAtTime(.001,s+d);o.connect(g);g.connect(AC.destination);o.start(s);o.stop(s+d+.02);
+}
+
+// ---------- utilidades ----------
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,k)=>a+(b-a)*k;
+const ease=k=>1-Math.pow(1-clamp(k),3);
+function rnd(a,b){return a+Math.random()*(b-a)}
+function shuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+function circle(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,TAU)}
+function ell(x,y,rx,ry,rot=0){ctx.beginPath();ctx.ellipse(x,y,rx,ry,rot,0,TAU)}
+function txt(s,x,y,size=16,color='#fff',align='left',weight='normal'){
+ ctx.font=`${weight} ${size}px ${FONT}`;ctx.fillStyle=color;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillText(s,x,y)}
+function wrap(s,x,y,maxW,lh,size,color='#fff',align='left',weight='normal'){
+ ctx.font=`${weight} ${size}px ${FONT}`;const words=s.split(' ');let line='';
+ for(const w of words){const test=line?line+' '+w:w;if(ctx.measureText(test).width>maxW&&line){txt(line,x,y,size,color,align,weight);y+=lh;line=w}else line=test}
+ if(line){txt(line,x,y,size,color,align,weight);y+=lh}return y}
+function hit(b,p){return p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h}
+function button(label,x,y,w,h,fn,color='#2fb37a'){
+ const b={x,y,w,h,fn};buttons.push(b);const hov=hit(b,mouse);
+ ctx.save();ctx.shadowColor='rgba(0,0,0,.4)';ctx.shadowBlur=12;ctx.shadowOffsetY=4;
+ rr(x,y-(hov?2:0),w,h,h/2);ctx.fillStyle=hov?'#45d394':color;ctx.fill();ctx.restore();
+ txt(label,x+w/2,y+h/2+7-(hov?2:0),20,'#fff','center','bold')}
+function heart(x,y,s,color){ctx.save();ctx.translate(x,y);ctx.scale(s,s);ctx.fillStyle=color;ctx.beginPath();
+ ctx.moveTo(0,4);ctx.bezierCurveTo(-10,-4,-6,-12,0,-7);ctx.bezierCurveTo(6,-12,10,-4,0,4);ctx.fill();ctx.restore()}
+function fmt(n){return n.toFixed(1).replace('.',',')}
+function sgn(n){return(n>=0?'+':'−')+fmt(Math.abs(n))}
+function thumbsUp(x,y,s){
+ ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+ ctx.fillStyle='#f4b6c2';ctx.strokeStyle='#b86f7e';ctx.lineWidth=2.5;
+ rr(-12,-36,11,28,5);ctx.fill();ctx.stroke();
+ rr(-15,-12,32,28,9);ctx.fill();ctx.stroke();
+ for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(3,-4+i*7);ctx.lineTo(17,-4+i*7);ctx.stroke()}
+ ctx.restore();
+}
+// ---------- laboratório (fundo) ----------
+const BENCH=500;
+function hexA(h,a){const n=parseInt(h.slice(1),16);return`rgba(${n>>16&255},${n>>8&255},${n&255},${a})`}
+const EMITTERS=[
+ {cx:70,bottom:BENCH-6,spawnW:26,surface:BENCH-50,neckY:BENCH-72,neckHalf:9,top:BENCH-110,color:'#4fd1c5',rate:2.2},
+ {cx:180,bottom:BENCH-74,spawnW:18,surface:BENCH-100,neckY:BENCH-112,neckHalf:7,top:BENCH-170,color:'#ff6b8b',rate:6},
+ {cx:735,bottom:BENCH-6,spawnW:26,surface:BENCH-44,neckY:-1e9,neckHalf:30,top:BENCH-82,color:'#7aa2ff',rate:1.6},
+ {cx:805,bottom:BENCH-8,spawnW:6,surface:BENCH-86,neckY:-1e9,neckHalf:9,top:BENCH-142,color:'#ffd166',rate:1.4},
+ {cx:878,bottom:BENCH-6,spawnW:24,surface:BENCH-42,neckY:BENCH-66,neckHalf:8,top:BENCH-100,color:'#9b7bff',rate:2.4}];
+EMITTERS.forEach(e=>e.acc=Math.random());
+let bubbles=[],pops=[];
+function updateLab(dt){
+ for(const e of EMITTERS){e.acc+=dt*e.rate;while(e.acc>=1){e.acc-=1;
+  bubbles.push({e,x:e.cx+rnd(-e.spawnW,e.spawnW),y:e.bottom,r:rnd(1.5,3.5),vy:rnd(28,55),ph:rnd(0,TAU),out:false,life:rnd(1.6,3)})}}
+ for(const b of bubbles){const e=b.e;b.y-=b.vy*dt;b.x+=Math.sin(t*3+b.ph)*dt*(b.out?18:10);
+  if(!b.out){if(b.y<e.neckY)b.x=lerp(b.x,e.cx,clamp(dt*6));b.x=clamp(b.x,e.cx-e.neckHalf+3,e.cx+e.neckHalf-3);
+   if(b.y<e.top){b.out=true;b.vy*=.55}}
+  else{b.r=Math.min(9,b.r+dt*2.5);b.life-=dt;if(b.life<=0)pops.push({x:b.x,y:b.y,r:b.r,c:e.color,k:0})}}
+ bubbles=bubbles.filter(b=>!b.out||b.life>0);
+ for(const p of pops)p.k+=dt*3;pops=pops.filter(p=>p.k<1);
+}
+function flaskPath(x,base,w,h){const nw=w*.24;ctx.beginPath();ctx.moveTo(x-nw/2,base-h);ctx.lineTo(x-nw/2,base-h*.6);ctx.lineTo(x-w/2,base-4);
+ ctx.quadraticCurveTo(x-w/2,base,x-w/2+6,base);ctx.lineTo(x+w/2-6,base);ctx.quadraticCurveTo(x+w/2,base,x+w/2,base-4);ctx.lineTo(x+nw/2,base-h*.6);ctx.lineTo(x+nw/2,base-h);}
+function liquid(pathFn,surfaceY,bottomY,color){ctx.save();pathFn();ctx.closePath();ctx.clip();
+ ctx.fillStyle=hexA(color,.75);ctx.beginPath();ctx.moveTo(0,bottomY);ctx.lineTo(0,surfaceY);
+ for(let x=0;x<=W;x+=8)ctx.lineTo(x,surfaceY+Math.sin(x*.15+t*4)*1.2);ctx.lineTo(W,bottomY);ctx.fill();ctx.restore()}
+function glass(pathFn,close=false){pathFn();if(close)ctx.closePath();ctx.fillStyle='rgba(200,230,255,.08)';ctx.fill();ctx.strokeStyle='rgba(225,240,255,.75)';ctx.lineWidth=2.2;ctx.stroke()}
+function drawErlen(x,w,h,color,fill){const f=()=>flaskPath(x,BENCH,w,h);liquid(f,BENCH-h*fill,BENCH,color);glass(f);
+ ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-w*.3,BENCH-12);ctx.lineTo(x-w*.12,BENCH-h*.5);ctx.stroke()}
+function drawBeaker(x,w,h,color,fill){const f=()=>{ctx.beginPath();ctx.moveTo(x-w/2-5,BENCH-h);ctx.lineTo(x-w/2,BENCH-h+5);ctx.lineTo(x-w/2,BENCH);ctx.lineTo(x+w/2,BENCH);ctx.lineTo(x+w/2,BENCH-h)};
+ liquid(f,BENCH-h*fill,BENCH,color);glass(f);ctx.strokeStyle='rgba(255,255,255,.5)';ctx.lineWidth=1;
+ for(let i=1;i<5;i++){ctx.beginPath();ctx.moveTo(x-w/2+4,BENCH-i*h/5);ctx.lineTo(x-w/2+(i%2?14:9),BENCH-i*h/5);ctx.stroke()}}
+function drawCylinder(x,w,h,color,fill){const f=()=>{ctx.beginPath();ctx.moveTo(x-w/2,BENCH-h);ctx.lineTo(x-w/2,BENCH-6);ctx.lineTo(x+w/2,BENCH-6);ctx.lineTo(x+w/2,BENCH-h)};
+ liquid(f,BENCH-6-(h-6)*fill,BENCH-6,color);glass(f);ctx.fillStyle='rgba(225,240,255,.6)';rr(x-w/2-8,BENCH-6,w+16,6,2);ctx.fill();
+ ctx.strokeStyle='rgba(255,255,255,.5)';ctx.lineWidth=1;for(let y=BENCH-20;y>BENCH-h+8;y-=12){ctx.beginPath();ctx.moveTo(x+w/2-2,y);ctx.lineTo(x+w/2-8,y);ctx.stroke()}}
+function drawBoiling(x){
+ // suporte
+ ctx.fillStyle='#55606b';ctx.fillRect(x-60,BENCH-6,70,6);ctx.fillRect(x-52,BENCH-200,5,196);
+ ctx.fillRect(x-50,BENCH-150,40,4);ctx.strokeStyle='#55606b';ctx.lineWidth=3;circle(x,BENCH-148,9);ctx.stroke();
+ // bico de Bunsen
+ ctx.fillStyle='#6b7785';ctx.fillRect(x-14,BENCH-8,28,8);ctx.fillRect(x-5,BENCH-44,10,36);
+ const fl=1+Math.sin(t*22)*.08+Math.sin(t*13)*.06;
+ ctx.fillStyle='rgba(90,150,255,.85)';ctx.beginPath();ctx.moveTo(x-6,BENCH-44);ctx.quadraticCurveTo(x,BENCH-44-22*fl,x+6,BENCH-44);ctx.fill();
+ ctx.fillStyle='rgba(255,190,90,.6)';ctx.beginPath();ctx.moveTo(x-3,BENCH-44);ctx.quadraticCurveTo(x,BENCH-44-12*fl,x+3,BENCH-44);ctx.fill();
+ // balão de fundo redondo
+ const cy=BENCH-92,r=26,f=()=>{ctx.beginPath();ctx.moveTo(x-7,BENCH-170);ctx.lineTo(x-7,cy-r+3);ctx.arc(x,cy,r,-Math.PI/2-.28,Math.PI*1.5+.28,true);ctx.lineTo(x+7,BENCH-170)};
+ liquid(f,BENCH-100,BENCH,'#ff6b8b');glass(f);
+}
+function drawTubes(x){ctx.fillStyle='#8a6a4a';ctx.fillRect(x-6,BENCH-50,96,7);ctx.fillRect(x-6,BENCH-14,96,7);ctx.fillRect(x-6,BENCH-50,5,50);ctx.fillRect(x+85,BENCH-50,5,50);
+ ['#ff9f43','#4fd1c5','#ff6b8b','#7aa2ff'].forEach((c,i)=>{const tx=x+10+i*20,f=()=>{ctx.beginPath();ctx.moveTo(tx-6,BENCH-82);ctx.lineTo(tx-6,BENCH-14);ctx.arc(tx,BENCH-14,6,Math.PI,0,true);ctx.lineTo(tx+6,BENCH-82)};
+  liquid(f,BENCH-40-i*6,BENCH,c);glass(f)});ctx.fillStyle='#8a6a4a';ctx.fillRect(x-6,BENCH-50,96,7)}
+function micropipette(x,tipY,color,rot=0){ctx.save();ctx.translate(x,tipY);ctx.rotate(rot);
+ ctx.fillStyle='rgba(235,245,255,.85)';ctx.beginPath();ctx.moveTo(-1.5,0);ctx.lineTo(-5,-34);ctx.lineTo(5,-34);ctx.lineTo(1.5,0);ctx.fill();
+ ctx.fillStyle='#dfe5ea';rr(-6,-50,12,18,3);ctx.fill();
+ ctx.fillStyle='#eef2f5';rr(-9,-112,18,64,7);ctx.fill();ctx.fillStyle=color;rr(-9,-96,18,10,2);ctx.fill();
+ ctx.fillStyle='#c9d1d8';rr(-12,-100,8,24,3);ctx.fill();
+ ctx.fillStyle='#d6dce1';ctx.fillRect(-3,-126,6,16);ctx.fillStyle=color;rr(-8,-134,16,9,4);ctx.fill();ctx.restore()}
+function drawPipetteStand(x){ctx.fillStyle='#3d4a57';rr(x-40,BENCH-10,80,10,3);ctx.fill();ctx.fillRect(x-3,BENCH-190,6,180);
+ ctx.fillRect(x-36,BENCH-180,72,6);['#ff6b8b','#ffd166','#4fd1c5'].forEach((c,i)=>micropipette(x-24+i*24,BENCH-40,c))}
+function drawDrip(){const x=735,tipY=BENCH-112,surf=BENCH-44,ph=(t%1.8)/1.8;
+ micropipette(x,tipY,'#7aa2ff');
+ ctx.fillStyle='rgba(122,162,255,.9)';
+ if(ph<.6){circle(x,tipY+2+ph*5,1+ph*4);ctx.fill()}
+ else if(ph<.78){const k=(ph-.6)/.18,y=tipY+5+k*k*(surf-tipY-5);ell(x,y,3,4.5);ctx.fill()}
+ else{const k=(ph-.78)/.22;ctx.strokeStyle=`rgba(200,220,255,${1-k})`;ctx.lineWidth=1.5;ell(x,surf,4+k*16,1.5+k*3);ctx.stroke()}}
+const SHELF=[['#6b3f1f','NaCl'],['#2f6fb6','PBS'],['#6b3f1f','EtOH'],['#2fb37a','HCl'],['#8a2f4f','KCl'],['#6b3f1f','DMSO']];
+function drawLab(){
+ const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#2b4459');g.addColorStop(1,'#1c2e40');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ ctx.strokeStyle='rgba(255,255,255,.035)';ctx.lineWidth=1;
+ for(let y=0;y<BENCH;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+ for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,BENCH);ctx.stroke()}
+ // prateleira
+ ctx.fillStyle='#4a5a6a';ctx.fillRect(0,232,W,8);ctx.fillStyle='rgba(0,0,0,.25)';ctx.fillRect(0,240,W,6);
+ SHELF.forEach(([c,l],i)=>{for(const side of[0,1]){const x=side?W-40-i*52:40+i*52;
+  ctx.fillStyle=hexA(c,.9);rr(x-15,192,30,40,5);ctx.fill();ctx.fillStyle='#22272c';ctx.fillRect(x-8,182,16,10);
+  ctx.fillStyle='#f4efe2';ctx.fillRect(x-12,204,24,16);txt(l,x,216,8,'#333','center','bold')}});
+ // bancada
+ ctx.fillStyle='#3a4754';ctx.fillRect(0,BENCH,W,H-BENCH);ctx.fillStyle='#6f808f';ctx.fillRect(0,BENCH-2,W,9);
+ ctx.fillStyle='rgba(0,0,0,.18)';for(let x=60;x<W;x+=240)ctx.fillRect(x,BENCH+30,4,H);
+ // vidraria
+ drawErlen(70,84,110,'#4fd1c5',.42);
+ drawBoiling(180);
+ drawTubes(245);
+ drawPipetteStand(380);
+ drawBeaker(735,72,82,'#7aa2ff',.54);
+ drawCylinder(805,26,142,'#ffd166',.6);
+ drawErlen(878,74,100,'#9b7bff',.42);
+ drawDrip();
+ // bolhas
+ for(const b of bubbles){const c=b.e.color;
+  if(!b.out){ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=1;circle(b.x,b.y,b.r);ctx.stroke()}
+  else{const a=clamp(b.life/1.2);ctx.fillStyle=hexA(c,.18*a);circle(b.x,b.y,b.r);ctx.fill();ctx.strokeStyle=hexA(c,.8*a);ctx.lineWidth=1.5;ctx.stroke();
+   ctx.fillStyle=`rgba(255,255,255,${.8*a})`;circle(b.x-b.r*.35,b.y-b.r*.35,b.r*.25);ctx.fill()}}
+ for(const p of pops){ctx.strokeStyle=hexA(p.c,1-p.k);ctx.lineWidth=1.2;for(let i=0;i<6;i++){const a=i*TAU/6,r1=p.r*(.6+p.k),r2=p.r*(1+p.k*1.4);
+  ctx.beginPath();ctx.moveTo(p.x+Math.cos(a)*r1,p.y+Math.sin(a)*r1);ctx.lineTo(p.x+Math.cos(a)*r2,p.y+Math.sin(a)*r2);ctx.stroke()}}
+}
+function panel(x,y,w,h,a=.82){rr(x,y,w,h,14);ctx.fillStyle=`rgba(13,22,31,${a})`;ctx.fill()}
+
+// ---------- estado ----------
+let state='title',buttons=[],mouse={x:330,y:300},keys={},touchMode=false,holdId=null;
+let lvl=0,score=0,attempts=[],nameIdx=0,mouseName='',tgt=null;
+let hand={x:330},tremA=.03,lagK=9,vDesc=1,timeLimit=24,tol=.3,aimT=0,ph=[0,0,0,0];
+let apFix=null,dvNow=.3,dvFix=0,injT=0,res=null,rt=0,particles=[],timedOut=false,sceneT=0;
+const NAMES=['Pipoca','Paçoca','Fubá','Tapioca','Cocada','Quindim','Jujuba','Bolinha','Canjica','Pamonha','Brigadeiro','Biscoito'];
+
+// ---------- atlas (corte sagital, mm a partir do bregma) ----------
+const S=60,PAN={x:20,y:20,w:620,h:600};
+const X=ap=>30+(-1-ap)*S,Y=dv=>230-dv*S;
+const apAt=x=>-1-(x-30)/S,dvAt=y=>(230-y)/S;
+const TARGETS=[
+ {s:'NTS',n:'Núcleo do trato solitário',ap:-7.5,ml:.3,dv:-4.7,rx:.42,ry:.2,c:'#ffd166',lx:0,ly:-20,
+  info:'Recebe sinais dos pulmões e dos quimiorreceptores do corpo carotídeo (pelos nervos vago e glossofaríngeo) e ajusta os reflexos da respiração.'},
+ {s:'preBötC',n:'Complexo pré-Bötzinger',ap:-6.8,ml:1.25,dv:-5.4,rx:.23,ry:.2,c:'#ff6b8b',lx:-4,ly:-18,
+  info:'É o "marca-passo" da respiração: seus neurônios geram o ritmo de cada inspiração, sem que a gente precise pensar nisso.'},
+ {s:'RTN',n:'Núcleo retrotrapezoide',ap:-5.9,ml:1.3,dv:-5.7,rx:.38,ry:.12,c:'#4fd1c5',lx:-40,ly:24,
+  info:'É um sensor de CO₂: quando o gás carbônico no sangue aumenta, o RTN manda o corpo respirar mais forte e mais rápido.'},
+ {s:'LC',n:'Locus coeruleus',ap:-5.4,ml:.9,dv:-3.6,rx:.2,ry:.3,c:'#7aa2ff',lx:-30,ly:6,
+  info:'Produz noradrenalina, controla o estado de alerta e também responde ao CO₂. É uma das regiões afetadas cedo na doença de Parkinson.'},
+ {s:'rVRG',n:'Grupo respiratório ventral rostral',ap:-7.3,ml:1.4,dv:-5.3,rx:.3,ry:.18,c:'#9b7bff',lx:26,ly:4,
+  info:'Neurônios pré-motores que levam o comando da inspiração até os motoneurônios do nervo frênico, que fazem o diafragma contrair.'}];
+const LANDMARKS=[
+ {n:'7N',full:'o núcleo do nervo facial (7N)',ap:-6.15,dv:-5.2,rx:.38,ry:.25},
+ {n:'oliva inf.',full:'a oliva inferior',ap:-7.15,dv:-5.83,rx:.45,ry:.12},
+ {n:'Pn',full:'os núcleos pontinos',ap:-4.35,dv:-5.85,rx:.45,ry:.22}];
+const BRAIN=[[-0.3,-.5],[-1.5,-.55],[-3,-.65],[-3.8,-.85],[-4.3,-1.25],[-4.7,-1.2],[-5.1,-1.45],[-5.35,-1.75],[-5.6,-1.55],[-6.3,-1.45],[-7,-1.7],[-7.6,-2.3],[-8,-3.1],[-8.15,-3.9],[-8.4,-4.15],[-9,-4.35],[-11.8,-4.5],
+ [-11.8,-5.45],[-9,-5.55],[-8.2,-5.8],[-7.4,-6],[-6.6,-6.05],[-5.9,-6.05],[-5.3,-6],[-4.9,-6.15],[-4.2,-6.2],[-3.6,-5.95],[-3.1,-5.8],[-2,-5.75],[-0.3,-5.7]];
+const CEREB=[[-5.35,-1.75],[-5.6,-1.55],[-6.3,-1.45],[-7,-1.7],[-7.6,-2.3],[-8,-3.1],[-8.15,-3.9],[-7.95,-4.08],[-7.3,-3.82],[-6.5,-3.37],[-5.6,-2.95],[-5.4,-2.5]];
+const VENT=[[-5.45,-2.95],[-6.5,-3.4],[-7.3,-3.85],[-7.95,-4.1],[-7.95,-4.2],[-7.3,-4.1],[-6.5,-3.75],[-5.45,-3.15]];
+const HIPP=[[-1.2,-1.3],[-2.5,-1.1],[-3.6,-1.3],[-3.95,-2.1],[-3.5,-2.5],[-2.5,-1.95],[-1.3,-1.95]];
+const SKULL=[[1,0],[-3.5,0],[-4.2,-.1],[-5,-.35],[-6,-.75],[-7,-1.15],[-7.7,-1.75],[-8.25,-2.7]];
+function smoothPath(pts,closed=true){
+ const p=pts.map(([a,d])=>[X(a),Y(d)]),P=new Path2D(),n=p.length;
+ if(closed){const m=(i,j)=>[(p[i][0]+p[j][0])/2,(p[i][1]+p[j][1])/2];let s=m(n-1,0);P.moveTo(s[0],s[1]);
+  for(let i=0;i<n;i++){const e=m(i,(i+1)%n);P.quadraticCurveTo(p[i][0],p[i][1],e[0],e[1])}P.closePath()}
+ else{P.moveTo(p[0][0],p[0][1]);for(let i=1;i<n-1;i++){const e=[(p[i][0]+p[i+1][0])/2,(p[i][1]+p[i+1][1])/2];P.quadraticCurveTo(p[i][0],p[i][1],e[0],e[1])}P.lineTo(p[n-1][0],p[n-1][1])}
+ return P}
+const PATH={brain:smoothPath(BRAIN),cereb:smoothPath(CEREB),vent:smoothPath(VENT),hipp:smoothPath(HIPP)};
+function skullAt(ap){if(ap>=SKULL[0][0])return 0;for(let i=1;i<SKULL.length;i++)if(ap>=SKULL[i][0]){const[a0,d0]=SKULL[i-1],[a1,d1]=SKULL[i];return lerp(d0,d1,(ap-a0)/(a1-a0))}return null}
+function inEll(ap,dv,o,k=1){return((ap-o.ap)/(o.rx*k))**2+((dv-o.dv)/(o.ry*k))**2<=1}
+function f2(n){return n.toFixed(2).replace('.',',')}
+function s2(n){return(n>=0?'+':'−')+f2(Math.abs(n))}
+function whereIs(ap,dv){
+ for(const o of TARGETS)if(inEll(ap,dv,o,1.15))return o===tgt?'a borda do alvo, mas fora da zona de precisão':`o ${o.s} (${o.n}), que é outro alvo`;
+ for(const o of LANDMARKS)if(inEll(ap,dv,o))return o.full;
+ const x=X(ap),y=Y(dv);
+ if(ctx.isPointInPath(PATH.vent,x,y))return'o 4º ventrículo (cheio de líquor)';
+ if(ctx.isPointInPath(PATH.cereb,x,y))return'o cerebelo';
+ if(ctx.isPointInPath(PATH.hipp,x,y))return'o hipocampo';
+ if(ctx.isPointInPath(PATH.brain,x,y))return ap>-4?'o mesencéfalo':ap>-5.2?'a ponte':ap>-8.3?'outra parte do bulbo':'a medula espinal';
+ return dv>-1?'nem entrou direito no cérebro':'fora do tecido cerebral';
+}
+
+// ---------- personagens ----------
+function drawDraP(x,y,s,happy=true){
+ ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+ ctx.fillStyle='#24160f';ell(0,8,56,70);ctx.fill();circle(0,-66,24);ctx.fill();
+ ctx.fillStyle='#b07850';ctx.fillRect(-12,48,24,36);
+ ctx.fillStyle='#f4f7fa';ctx.strokeStyle='#c4cfd9';ctx.lineWidth=2;
+ ctx.beginPath();ctx.moveTo(-88,180);ctx.quadraticCurveTo(-82,88,0,80);ctx.quadraticCurveTo(82,88,88,180);ctx.closePath();ctx.fill();ctx.stroke();
+ ctx.fillStyle='#1f8a8a';ctx.beginPath();ctx.moveTo(-22,82);ctx.lineTo(0,130);ctx.lineTo(22,82);ctx.closePath();ctx.fill();
+ ctx.strokeStyle='#c4cfd9';ctx.beginPath();ctx.moveTo(-22,82);ctx.lineTo(-8,150);ctx.moveTo(22,82);ctx.lineTo(8,150);ctx.stroke();
+ ctx.fillStyle='#0b4f8a';rr(24,110,46,26,4);ctx.fill();txt('ICB·USP',47,127,9.5,'#fcb421','center','bold');
+ ctx.fillStyle='#c98b5f';ell(0,0,44,54);ctx.fill();
+ ctx.fillStyle='#24160f';for(let i=0;i<9;i++){const a=Math.PI*(1.05+i*.1125);circle(Math.cos(a)*44,Math.sin(a)*50-6,13);ctx.fill()}
+ ctx.fillStyle='#e8b923';circle(-45,18,3.5);ctx.fill();circle(45,18,3.5);ctx.fill();
+ for(const k of[-1,1]){ctx.fillStyle='#fff';ell(k*17,4,7,5.5);ctx.fill();ctx.fillStyle='#3a2416';circle(k*17,4,3.8);ctx.fill();ctx.fillStyle='#fff';circle(k*17+1.3,2.6,1.1);ctx.fill()}
+ ctx.strokeStyle='#2a2a33';ctx.lineWidth=2.6;circle(-17,4,12);ctx.stroke();circle(17,4,12);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(-5,3);ctx.quadraticCurveTo(0,0,5,3);ctx.moveTo(-29,2);ctx.lineTo(-42,-2);ctx.moveTo(29,2);ctx.lineTo(42,-2);ctx.stroke();
+ ctx.strokeStyle='#24160f';ctx.lineWidth=3;ctx.lineCap='round';for(const k of[-1,1]){ctx.beginPath();ctx.moveTo(k*9,-15);ctx.quadraticCurveTo(k*17,-21,k*27,-15);ctx.stroke()}
+ ctx.fillStyle='rgba(220,90,90,.3)';circle(-28,24,7);ctx.fill();circle(28,24,7);ctx.fill();
+ ctx.strokeStyle='#7a2f35';ctx.lineWidth=3;ctx.beginPath();if(happy)ctx.arc(0,24,12,.15*Math.PI,.85*Math.PI);else ctx.arc(0,40,10,1.2*Math.PI,1.8*Math.PI);ctx.stroke();
+ ctx.restore();
+}
+const FUR='#3b3b45',FURD='#2a2a32';
+function drawMouseTop(x,y,rot,wag){
+ ctx.save();ctx.translate(x,y);ctx.rotate(rot);
+ ctx.lineCap='round';ctx.strokeStyle='#e7a1ac';ctx.lineWidth=6;
+ ctx.beginPath();ctx.moveTo(0,50);ctx.bezierCurveTo(wag*22,85,-28-wag*12,108,wag*26,145);ctx.stroke();
+ ctx.fillStyle='#f0b3bd';for(const[fx,fy]of[[-27,-10],[27,-10],[-29,36],[29,36]]){ell(fx,fy,7,5);ctx.fill()}
+ const g=ctx.createRadialGradient(-8,0,5,0,12,55);g.addColorStop(0,'#555560');g.addColorStop(1,FURD);ctx.fillStyle=g;
+ ell(0,14,31,43);ctx.fill();
+ ctx.beginPath();ctx.moveTo(-22,-24);ctx.quadraticCurveTo(-19,-55,0,-72);ctx.quadraticCurveTo(19,-55,22,-24);ctx.quadraticCurveTo(0,-15,-22,-24);ctx.fill();
+ for(const k of[-1,1]){ctx.fillStyle=FUR;circle(k*22,-36,14);ctx.fill();ctx.fillStyle='#f2b8c2';circle(k*22,-36,9);ctx.fill()}
+ for(const k of[-1,1]){ctx.fillStyle='#111';circle(k*9,-50,3.6);ctx.fill();ctx.fillStyle='#fff';circle(k*9+1,-51,1.2);ctx.fill()}
+ ctx.fillStyle='#ee8f9f';circle(0,-71,4);ctx.fill();
+ ctx.strokeStyle='rgba(220,220,220,.55)';ctx.lineWidth=1;for(const k of[-1,1])for(const d of[-8,0,8]){ctx.beginPath();ctx.moveTo(k*4,-65);ctx.lineTo(k*30,-67+d);ctx.stroke()}
+ ctx.restore();
+}
+function thumbsUp(x,y,s){
+ ctx.save();ctx.translate(x,y);ctx.scale(s,s);ctx.fillStyle='#f4b6c2';ctx.strokeStyle='#b86f7e';ctx.lineWidth=2.5;
+ rr(-12,-36,11,28,5);ctx.fill();ctx.stroke();rr(-15,-12,32,28,9);ctx.fill();ctx.stroke();
+ for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(3,-4+i*7);ctx.lineTo(17,-4+i*7);ctx.stroke()}ctx.restore()}
+function drawMouseFront(x,y,s,br,armK=0){
+ ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+ ctx.strokeStyle='#e7a1ac';ctx.lineWidth=8;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(36,96);ctx.bezierCurveTo(110,118,140,60,112,22);ctx.stroke();
+ const b=1+.06*br;
+ ctx.fillStyle=FUR;ell(0,46,54*b,72*(1+.02*br));ctx.fill();
+ ctx.fillStyle='#5a5a66';ell(0,62,32*b,48);ctx.fill();
+ ctx.fillStyle='#f0b3bd';ell(-30,116,20,10);ctx.fill();ell(30,116,20,10);ctx.fill();
+ ctx.strokeStyle=FUR;ctx.lineWidth=18;ctx.beginPath();ctx.moveTo(-40,12);ctx.lineTo(-34,56);ctx.stroke();ctx.fillStyle='#f0b3bd';circle(-34,62,9);ctx.fill();
+ for(const k of[-1,1]){ctx.fillStyle=FUR;circle(k*40,-66,26);ctx.fill();ctx.fillStyle='#f2b8c2';circle(k*40,-66,17);ctx.fill()}
+ ctx.fillStyle=FUR;ell(0,-30,46,40);ctx.fill();
+ for(const k of[-1,1]){ctx.fillStyle='#0c0c10';circle(k*17,-40,8);ctx.fill();ctx.fillStyle='#fff';circle(k*17+2.5,-43,2.6);ctx.fill()}
+ ctx.fillStyle='rgba(240,120,140,.4)';circle(-30,-22,7);ctx.fill();circle(30,-22,7);ctx.fill();
+ ctx.fillStyle='#ee8f9f';ell(0,-22,7,5);ctx.fill();
+ ctx.strokeStyle='#f0c8cf';ctx.lineWidth=2.2;ctx.beginPath();ctx.moveTo(0,-17);ctx.lineTo(0,-12);ctx.arc(-5,-12,5,0,Math.PI*.9);ctx.moveTo(0,-12);ctx.arc(5,-12,5,Math.PI,Math.PI*.1,true);ctx.stroke();
+ ctx.strokeStyle='rgba(220,220,220,.6)';ctx.lineWidth=1.2;for(const k of[-1,1])for(const d of[-8,0,8]){ctx.beginPath();ctx.moveTo(k*12,-18);ctx.lineTo(k*56,-22+d);ctx.stroke()}
+ const a=lerp(Math.PI*.45,-Math.PI*.38,ease(armK)),sx=42,sy=12,L=54,hx=sx+Math.cos(a)*L,hy=sy+Math.sin(a)*L;
+ ctx.strokeStyle=FUR;ctx.lineWidth=18;ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(hx,hy);ctx.stroke();
+ if(armK>.65)thumbsUp(hx,hy,1.25);else{ctx.fillStyle='#f0b3bd';circle(hx,hy,9);ctx.fill()}
+ ctx.restore();
+}
+function drawHandSyringe(tx,ty,fluid,color){
+ const NL=120,yB=-NL-12,yT=yB-110,yS=yB-100*fluid;
+ ctx.save();ctx.translate(tx,ty);ctx.lineCap='round';
+ ctx.strokeStyle='#cfd8e1';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(0,-NL);ctx.stroke();
+ ctx.fillStyle='#93a2b1';ctx.beginPath();ctx.moveTo(-2,-NL);ctx.lineTo(-6,yB);ctx.lineTo(6,yB);ctx.lineTo(2,-NL);ctx.fill();
+ ctx.fillStyle=hexA(color,.85);ctx.fillRect(-7,yS,14,yB-yS);
+ ctx.fillStyle='#222';ctx.fillRect(-7,yS-5,14,5);
+ ctx.fillStyle='#e8eef3';ctx.fillRect(-2.5,yS-105,5,100);rr(-14,yS-111,28,6,3);ctx.fill();
+ rr(-8,yT,16,yB-yT,3);ctx.fillStyle='rgba(220,240,255,.18)';ctx.fill();ctx.strokeStyle='#e4edf5';ctx.lineWidth=1.6;ctx.stroke();
+ ctx.strokeStyle='rgba(255,255,255,.6)';ctx.lineWidth=1;for(let i=0;i<9;i++){ctx.beginPath();ctx.moveTo(3,yB-8-i*11);ctx.lineTo(8,yB-8-i*11);ctx.stroke()}
+ ctx.fillStyle='#e4edf5';rr(-17,yT-4,34,5,2);ctx.fill();
+ // braço e mão enluvada
+ ctx.strokeStyle='#eef2f6';ctx.lineWidth=48;ctx.beginPath();ctx.moveTo(92,yB-150);ctx.lineTo(190,yB-330);ctx.stroke();
+ ctx.strokeStyle='#cdd6df';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(70,yB-112);ctx.lineTo(118,yB-170);ctx.stroke();
+ ctx.strokeStyle='#6f60ee';ctx.lineWidth=38;ctx.beginPath();ctx.moveTo(30,yB-58);ctx.lineTo(88,yB-145);ctx.stroke();
+ ctx.fillStyle='#7b6cf6';ctx.strokeStyle='#4f41c4';ctx.lineWidth=1.5;ell(24,yB-58,23,30,.3);ctx.fill();ctx.stroke();
+ ctx.strokeStyle='#6f60ee';ctx.lineWidth=12;ctx.beginPath();ctx.moveTo(28,yB-82);ctx.quadraticCurveTo(14,yS-90,6,yS-108);ctx.stroke();
+ ctx.fillStyle='#7b6cf6';ctx.strokeStyle='#4f41c4';
+ for(let i=0;i<3;i++){const fy=yB-74+i*15;rr(-15,fy,44,13,6.5);ctx.fill();ctx.stroke()}
+ ctx.restore();
+}
+
+// ---------- cenário USP ----------
+const IPE=[[95,455,1],[430,465,.85],[30,480,.7]];
+function drawUSP(){
+ const g=ctx.createLinearGradient(0,0,0,470);g.addColorStop(0,'#2d6cb0');g.addColorStop(.7,'#9cc3e0');g.addColorStop(1,'#f3d29a');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='rgba(255,236,170,.9)';circle(820,120,40);ctx.fill();
+ ctx.fillStyle='rgba(255,255,255,.75)';for(const[cx,cy,s]of[[140+((t*8)%1100)-100,90,1],[600+((t*5)%1100)-500,60,.8],[380+((t*6)%1100)-300,150,.6]]){ell(cx,cy,50*s,16*s);ctx.fill();ell(cx+30*s,cy-10*s,30*s,16*s);ctx.fill()}
+ ctx.fillStyle='#6b8799';for(const[bx,bw,bh]of[[0,120,60],[130,90,40],[470,160,55],[650,110,35],[770,190,62]]){ctx.fillRect(bx,470-bh,bw,bh)}
+ ctx.fillStyle='#3f8f4f';ctx.fillRect(0,468,W,H-468);ctx.fillStyle='#4a9b59';for(let i=0;i<40;i++)ctx.fillRect((i*97)%W,480+(i*37)%150,30,3);
+ ctx.fillStyle='#d8d4ca';ctx.beginPath();ctx.moveTo(120,640);ctx.lineTo(205,478);ctx.lineTo(295,478);ctx.lineTo(380,640);ctx.fill();
+ ctx.fillStyle='#5aa7d6';rr(170,478,160,22,4);ctx.fill();ctx.fillStyle='rgba(255,255,255,.35)';ctx.fillRect(180,486,140,2);
+ // Torre do Relógio
+ const tx=250;ctx.fillStyle='rgba(0,0,0,.2)';ctx.fillRect(tx-26,488,62,10);
+ const tg=ctx.createLinearGradient(tx-28,0,tx+28,0);tg.addColorStop(0,'#bdb7aa');tg.addColorStop(.5,'#ddd8cc');tg.addColorStop(1,'#a9a397');
+ ctx.fillStyle=tg;ctx.fillRect(tx-28,96,56,392);
+ ctx.strokeStyle='rgba(90,85,75,.35)';ctx.lineWidth=1;for(let k=-18;k<=18;k+=9){ctx.beginPath();ctx.moveTo(tx+k,180);ctx.lineTo(tx+k,486);ctx.stroke()}
+ ctx.fillStyle='rgba(90,85,75,.25)';for(let i=0;i<14;i++)ctx.fillRect(tx-22+((i*13)%40),200+i*19,8,10);
+ ctx.fillStyle='#8f8a7e';ctx.fillRect(tx-32,90,64,8);
+ ctx.fillStyle='#f7f5ee';circle(tx,135,21);ctx.fill();ctx.strokeStyle='#4a463d';ctx.lineWidth=2.5;ctx.stroke();
+ for(let i=0;i<12;i++){const a=i*TAU/12;ctx.lineWidth=i%3?1:2;ctx.beginPath();ctx.moveTo(tx+Math.cos(a)*16,135+Math.sin(a)*16);ctx.lineTo(tx+Math.cos(a)*19,135+Math.sin(a)*19);ctx.stroke()}
+ const d=new Date(),hm=(d.getHours()%12+d.getMinutes()/60)/12*TAU-Math.PI/2,mm=d.getMinutes()/60*TAU-Math.PI/2;
+ ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(tx,135);ctx.lineTo(tx+Math.cos(hm)*10,135+Math.sin(hm)*10);ctx.stroke();
+ ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(tx,135);ctx.lineTo(tx+Math.cos(mm)*15,135+Math.sin(mm)*15);ctx.stroke();
+ // ipês amarelos
+ for(const[ix,iy,s]of IPE){ctx.strokeStyle='#5b3b22';ctx.lineWidth=9*s;ctx.beginPath();ctx.moveTo(ix,iy+20*s);ctx.lineTo(ix,iy-60*s);ctx.moveTo(ix,iy-30*s);ctx.lineTo(ix-25*s,iy-70*s);ctx.moveTo(ix,iy-40*s);ctx.lineTo(ix+28*s,iy-78*s);ctx.stroke();
+  for(let i=0;i<16;i++){const a=i*2.4,r=(20+(i*7)%30)*s;ctx.fillStyle=i%4?'#f6c321':'#e9a913';circle(ix+Math.cos(a)*r*1.3,iy-80*s+Math.sin(a)*r*.7,(16-(i%3)*3)*s);ctx.fill()}}
+ // pétalas caindo
+ ctx.fillStyle='#f6c321';for(let i=0;i<18;i++){const px=(i*53+Math.sin(t+i)*20)%460,py=(i*71+t*30)%260+340;ell(px,py,3,2,t+i);ctx.fill()}
+}
+
+// ---------- utilidades de jogo ----------
+function tremor(){const a=tremA*S;
+ const dx=a*1.2*(.6*Math.sin(t*.8+ph[0])+.4*Math.sin(t*1.9+ph[1])),dy=a*(.6*Math.sin(t*.7+ph[2])+.4*Math.sin(t*1.6+ph[3]));
+ return{x:dx+a*(Math.sin(t*6.3)+.6*Math.sin(t*13.7+1.3)+.3*Math.sin(t*2.1))/1.4,y:dy+a*(Math.cos(t*5.1+.4)+.6*Math.sin(t*11.9+2.2))/1.4}}
+function tipPos(){
+ if(state==='ap'){const d=tremor();return{x:clamp(hand.x+d.x,32,628),y:Y(.3)+d.y*.4}}
+ return{x:X(apFix),y:Y(state==='dv'?dvNow:dvFix)}}
+function inPanel(p){return p.x>PAN.x&&p.x<PAN.x+PAN.w&&p.y>PAN.y&&p.y<PAN.y+PAN.h}
+
+// ---------- fluxo ----------
+function newGame(){lvl=0;score=0;attempts=[0,0,0,0,0];nameIdx=Math.floor(Math.random()*NAMES.length);startLevel()}
+function startLevel(){
+ tgt=TARGETS[lvl];attempts[lvl]++;mouseName=NAMES[nameIdx++%NAMES.length];
+ tremA=[.03,.045,.06,.075,.09][lvl];lagK=[9,8,7,6.5,6][lvl];vDesc=[1,1.15,1.3,1.45,1.6][lvl];
+ timeLimit=[24,22,20,18,17][lvl];tol=[.3,.28,.26,.24,.22][lvl];
+ ph=ph.map(()=>rnd(0,TAU));hand.x=mouse.x;aimT=0;apFix=null;dvNow=.3;timedOut=false;sceneT=0;state='ap';
+}
+function fixAP(){if(state!=='ap')return;apFix=apAt(tipPos().x);state='dv';snd(140,.25,'sawtooth',.05,-40);snd(880,.08,'sine',.06,0,.05)}
+function inject(){if(state==='ap')fixAP();if(state!=='dv')return;dvFix=dvNow;injT=0;state='inject';holdId=null;keys.desc=false;snd(220,.6,'triangle',.07,160)}
+function evaluate(){
+ const dAP=apFix-tgt.ap,dDV=dvFix-tgt.dv,d=Math.hypot(dAP,dDV),ok=!timedOut&&d<=tol;
+ res={ok,dAP,dDV,d,pts:0,theta:0,turns:0,where:ok?'':whereIs(apFix,dvFix),name:mouseName};
+ rt=0;particles=[];
+ if(ok){res.pts=100+Math.round(100*(1-d/tol))+Math.round(50*clamp(1-aimT/timeLimit))-40*(attempts[lvl]-1);res.pts=Math.max(50,res.pts);score+=res.pts;state='hit';
+  [523,659,784,1046].forEach((f,i)=>snd(f,.18,'triangle',.12,0,i*.1))}
+ else{state='miss';snd(180,.4,'sawtooth',.07,-60)}
+}
+function next(){lvl++;if(lvl>=TARGETS.length)startFinale();else startLevel()}
+
+// ---------- update ----------
+function update(dt){
+ updateLab(dt);sceneT+=dt;
+ if(state==='ap'||state==='dv'){
+  aimT+=dt;
+  if(state==='ap'){const k=1-Math.exp(-dt*lagK);hand.x+=(mouse.x-hand.x)*k}
+  else if(keys.desc||holdId!==null){const before=dvNow;dvNow=Math.max(-6.8,dvNow-vDesc*dt);
+   if(Math.floor(before*10)!==Math.floor(dvNow*10))snd(1200,.025,'square',.015)}
+  if(aimT>=timeLimit){timedOut=true;if(state==='ap')fixAP();inject()}
+ }else if(state==='inject'){injT+=dt;if(injT>=1.3)evaluate()}
+ else if(state==='miss'){rt+=dt;
+  if(rt>.6){const sp=clamp((rt-.6)/1)*(TAU/1.1);res.theta+=sp*dt;const n=Math.floor(res.theta/TAU);if(n>res.turns){res.turns=n;snd(1300,.08,'square',.035,400)}}}
+ else if(state==='hit'){rt+=dt;
+  if(rt>.3&&!res.burst){res.burst=true;for(let i=0;i<40;i++)particles.push({x:300,y:330,vx:rnd(-260,260),vy:rnd(-380,-80),life:rnd(1.2,2.2),c:['#ff6b8b','#ffd166','#4fd1c5','#7aa2ff','#9b7bff'][i%5],h:i%3===0})}}
+ else if(state==='finale')updateFinale(dt);
+ else if(UPD[state])UPD[state](dt);
+ for(const p of particles){if(!p.spark)p.vy+=420*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt}
+ particles=particles.filter(p=>p.life>0);
+}
+
+// ---------- desenho do atlas ----------
+function drawAtlas(){
+ ctx.save();rr(PAN.x,PAN.y,PAN.w,PAN.h,14);ctx.clip();
+ const bg=ctx.createLinearGradient(0,PAN.y,0,PAN.y+PAN.h);bg.addColorStop(0,'#14202c');bg.addColorStop(1,'#0c141c');ctx.fillStyle=bg;ctx.fillRect(PAN.x,PAN.y,PAN.w,PAN.h);
+ ctx.strokeStyle='rgba(120,170,210,.07)';ctx.lineWidth=1;
+ for(let a=-1;a>-12;a--){ctx.beginPath();ctx.moveTo(X(a),PAN.y);ctx.lineTo(X(a),PAN.y+PAN.h);ctx.stroke()}
+ for(let d=0;d>-7;d--){ctx.beginPath();ctx.moveTo(PAN.x,Y(d));ctx.lineTo(PAN.x+PAN.w,Y(d));ctx.stroke()}
+ ctx.strokeStyle='rgba(255,224,102,.25)';ctx.setLineDash([4,6]);ctx.beginPath();ctx.moveTo(PAN.x,Y(0));ctx.lineTo(PAN.x+PAN.w,Y(0));ctx.stroke();ctx.setLineDash([]);
+ // crânio
+ const sk=SKULL.map(([a,d])=>[X(a),Y(d)]);
+ ctx.strokeStyle='#e9dfc8';ctx.lineWidth=.3*S;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();sk.forEach(([x,y],i)=>i?ctx.lineTo(x,y+.15*S):ctx.moveTo(x,y+.15*S));ctx.stroke();
+ ctx.strokeStyle='rgba(160,140,110,.5)';ctx.lineWidth=1;ctx.beginPath();sk.forEach(([x,y],i)=>i?ctx.lineTo(x,y+.15*S):ctx.moveTo(x,y+.15*S));ctx.stroke();
+ txt('crânio',X(-1.6),Y(0)-6,12,'#e9dfc8','center','bold');
+ ctx.fillStyle='#ffe066';circle(X(-3.8),Y(-.02),4);ctx.fill();txt('lambda',X(-3.8),Y(0)-8,11,'#ffe066','center','bold');
+ // cérebro
+ const bgr=ctx.createLinearGradient(0,Y(0),0,Y(-6.2));bgr.addColorStop(0,'#e7a9ad');bgr.addColorStop(1,'#d48c95');
+ ctx.fillStyle=bgr;ctx.fill(PATH.brain);ctx.strokeStyle='#a45662';ctx.lineWidth=2.5;ctx.stroke(PATH.brain);
+ ctx.fillStyle='rgba(255,255,255,.18)';ctx.fill(PATH.hipp);ctx.strokeStyle='rgba(164,86,98,.5)';ctx.lineWidth=1.5;ctx.stroke(PATH.hipp);
+ ctx.fillStyle='#e7b0a2';ctx.fill(PATH.cereb);ctx.strokeStyle='#a45662';ctx.lineWidth=2;ctx.stroke(PATH.cereb);
+ ctx.save();ctx.clip(PATH.cereb);ctx.strokeStyle='rgba(255,250,240,.7)';ctx.lineWidth=3;
+ const c0=[X(-6.6),Y(-3.1)];for(const[a,d]of[[-5.6,-1.8],[-6.2,-1.6],[-6.9,-1.8],[-7.5,-2.4],[-7.9,-3.2],[-8,-3.8]]){ctx.beginPath();ctx.moveTo(c0[0],c0[1]);ctx.quadraticCurveTo((c0[0]+X(a))/2+6,(c0[1]+Y(d))/2,X(a),Y(d)+8);ctx.stroke()}
+ ctx.strokeStyle='rgba(164,86,98,.45)';ctx.lineWidth=1.4;for(let a=-5.5;a>-8.1;a-=.22){ctx.beginPath();ctx.arc(X(a),Y(-1.5-Math.max(0,(-a-6.8))*1.3)-4,9,0,Math.PI);ctx.stroke()}
+ ctx.restore();
+ ctx.fillStyle='#3d5a78';ctx.fill(PATH.vent);ctx.strokeStyle='#2b4058';ctx.lineWidth=1;ctx.stroke(PATH.vent);
+ ctx.fillStyle='rgba(255,255,255,.07)';ell(X(-2.2),Y(-3.3),1.1*S,.6*S);ctx.fill();
+ // marcos anatômicos
+ for(const o of LANDMARKS){ctx.fillStyle='rgba(120,60,80,.25)';ell(X(o.ap),Y(o.dv),o.rx*S,o.ry*S);ctx.fill();ctx.strokeStyle='rgba(120,60,80,.5)';ctx.lineWidth=1;ctx.stroke()}
+ const L=(s,a,d,sz=12,c='rgba(70,25,40,.75)')=>txt(s,X(a),Y(d),sz,c,'center','bold');
+ L('Córtex',-1.8,-.85);L('Hipocampo',-2.6,-1.65);L('Tálamo',-2.2,-3.35);L('Mesencéfalo',-4,-2.6);L('Colículos',-4.55,-1.6,11);
+ L('Cerebelo',-6.6,-2.3,14,'rgba(90,40,50,.85)');L('Ponte',-4.3,-5.2);L('Bulbo',-8.7,-5.05);L('Medula',-10.1,-5.05);
+ L('7N',-6.15,-5.16,11);L('oliva inf.',-7.15,-5.6,10);L('Pn',-4.35,-5.8,11);
+ txt('4º ventrículo',X(-6.1)+4,Y(-3.15)-2,10,'#d6e6f7','left','bold');
+ // regiões-alvo
+ for(const o of TARGETS){const cur=o===tgt,done=TARGETS.indexOf(o)<lvl;
+  const pulse=cur?1+.08*Math.sin(t*5):1;ctx.globalAlpha=cur?1:.55;
+  ctx.fillStyle=hexA(o.c,cur?.45:.25);ell(X(o.ap),Y(o.dv),o.rx*S*pulse,o.ry*S*pulse);ctx.fill();
+  ctx.strokeStyle=o.c;ctx.lineWidth=cur?2.2:1.2;ctx.stroke();
+  txt(o.s+(done?' ✓':''),X(o.ap)+o.lx,Y(o.dv)+o.ly,cur?13:11,cur?'#fff':o.c,'center','bold');ctx.globalAlpha=1}
+ if(tgt){ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=1;ctx.setLineDash([3,4]);circle(X(tgt.ap),Y(tgt.dv),tol*S);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#fff';circle(X(tgt.ap),Y(tgt.dv),2);ctx.fill()}
+ // furo e trilha da agulha
+ if(apFix!==null){const hx=X(apFix),sy=Y(skullAt(apFix)??0);ctx.fillStyle='#14202c';ctx.fillRect(hx-4,sy-2,8,.3*S+4);
+  const ty=tipPos().y;if(ty>sy){ctx.strokeStyle='rgba(120,30,40,.35)';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(hx,sy);ctx.lineTo(hx,ty);ctx.stroke()}}
+ if(state==='inject'||state==='hit'||state==='miss'){const k=state==='inject'?clamp(injT/1.3):1,p=tipPos();
+  const g=ctx.createRadialGradient(p.x,p.y,1,p.x,p.y,6+k*18);g.addColorStop(0,hexA(tgt.c,.9));g.addColorStop(1,hexA(tgt.c,0));ctx.fillStyle=g;circle(p.x,p.y,6+k*18);ctx.fill()}
+ // réguas
+ ctx.fillStyle='rgba(10,16,22,.85)';ctx.fillRect(PAN.x,PAN.y,PAN.w,26);ctx.fillRect(PAN.x+PAN.w-40,PAN.y+26,40,PAN.h-26);
+ for(let i=-10;i>=-110;i--){const a=i/10,x=X(a);if(x<PAN.x||x>PAN.x+PAN.w-40)continue;const big=i%10===0,mid=i%5===0;
+  ctx.strokeStyle=big?'#cfe3f3':'rgba(160,190,215,.6)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,PAN.y+26);ctx.lineTo(x,PAN.y+26-(big?10:mid?6:3));ctx.stroke();
+  if(big)txt(String(a).replace('-','−'),x,PAN.y+14,11,'#cfe3f3','center','bold')}
+ txt('AP',PAN.x+PAN.w-20,PAN.y+10,9,'#7f9ab3','center','bold');txt('mm',PAN.x+PAN.w-20,PAN.y+21,9,'#7f9ab3','center');
+ for(let i=5;i>=-68;i--){const d=i/10,y=Y(d);if(y<PAN.y+30)continue;const big=i%10===0,mid=i%5===0,xr=PAN.x+PAN.w-40;
+  ctx.strokeStyle=big?'#cfe3f3':'rgba(160,190,215,.6)';ctx.beginPath();ctx.moveTo(xr,y);ctx.lineTo(xr+(big?10:mid?6:3),y);ctx.stroke();
+  if(big)txt(i===0?'0':String(d).replace('-','−'),xr+26,y+4,11,'#cfe3f3','center','bold')}
+ txt('DV',PAN.x+PAN.w-20,PAN.y+44,10,'#7f9ab3','center','bold');
+ txt(`Corte sagital · ML ${tgt?'±'+f2(tgt.ml):''} mm`,PAN.x+10,PAN.y+44,11,'#7f9ab3');
+ // agulha / mão
+ const p=tipPos(),fl=state==='inject'?1-.6*clamp(injT/1.3):state==='ap'||state==='dv'?1:.4;
+ if(state==='ap'||state==='dv'){ctx.strokeStyle='rgba(127,227,255,.35)';ctx.setLineDash([2,4]);ctx.beginPath();ctx.moveTo(p.x,PAN.y+26);ctx.lineTo(p.x,PAN.y+PAN.h);
+  if(state==='dv'){ctx.moveTo(PAN.x,p.y);ctx.lineTo(PAN.x+PAN.w-40,p.y)}ctx.stroke();ctx.setLineDash([])}
+ drawHandSyringe(p.x,p.y,fl,tgt.c);
+ ctx.fillStyle='#ff4d6d';circle(p.x,p.y,2.5);ctx.fill();
+ const lab=state==='ap'?`AP ${s2(apAt(p.x))}`:`AP ${s2(apFix)} · DV ${s2(dvAt(p.y))}`;
+ ctx.font=`bold 12px ${FONT}`;const lw=ctx.measureText(lab).width+12,lx=clamp(p.x-lw-10,PAN.x+4,PAN.x+PAN.w-lw-44);
+ rr(lx,p.y+8,lw,20,6);ctx.fillStyle='rgba(10,16,22,.85)';ctx.fill();txt(lab,lx+6,p.y+22,12,'#7fe3ff','left','bold');
+ // banner
+ if(sceneT<2.6&&state==='ap'){ctx.globalAlpha=clamp((2.6-sceneT)*2);rr(120,250,420,76,14);ctx.fillStyle='rgba(10,16,22,.88)';ctx.fill();
+  txt(`ALVO ${lvl+1}: ${tgt.s}`,330,282,24,tgt.c,'center','900');txt(tgt.n,330,308,15,'#e6eef5','center','bold');ctx.globalAlpha=1}
+ const hint=state==='ap'?(touchMode?`Arraste até AP ${s2(tgt.ap)} e toque em FIXAR AP`:`Mova até AP ${s2(tgt.ap)} e clique para fixar`):state==='dv'?`Segure para descer até DV ${s2(tgt.dv)}, solte e INJETE`:'';
+ if(hint){rr(PAN.x+10,PAN.y+54,PAN.w-60,26,8);ctx.fillStyle='rgba(10,16,22,.8)';ctx.fill();txt(hint,PAN.x+PAN.w/2-20,PAN.y+72,13,'#ffd166','center','bold')}
+ ctx.restore();
+}
+
+// ---------- HUD ----------
+const DOWN_BTN={x:660,y:470,w:136,h:52};
+function hudBar(x,y,w,k,color,label){txt(label,x,y,12,'#9fb3c6');rr(x,y+5,w,11,5.5);ctx.fillStyle='#0e1822';ctx.fill();if(k>0){rr(x,y+5,Math.max(11,w*k),11,5.5);ctx.fillStyle=color;ctx.fill()}}
+function progress(x,y){TARGETS.forEach((o,i)=>{const cx=x+i*56,done=i<lvl,cur=i===lvl&&state!=='end'&&state!=='finale';
+ ctx.fillStyle=done||state==='end'||state==='finale'?o.c:cur?hexA(o.c,.35):'#22323f';circle(cx,y,13);ctx.fill();if(cur){ctx.strokeStyle=o.c;ctx.lineWidth=2;ctx.stroke()}
+ txt(done||state==='end'||state==='finale'?'✓':String(i+1),cx,y+5,13,done?'#10202c':'#e6eef5','center','bold');txt(o.s,cx,y+28,10,'#9fb3c6','center','bold')})}
+function drawHUD(){
+ panel(650,20,292,600,.9);
+ ctx.save();rr(662,32,64,64,32);ctx.clip();ctx.fillStyle='#2b4459';ctx.fillRect(662,32,64,64);drawDraP(694,70,.42,true);ctx.restore();
+ txt('Dra. P',736,58,18,'#fff','left','bold');txt('ICB · USP',736,78,12,'#fcb421','left','bold');
+ txt(`ALVO ${lvl+1}/5 · camundongo ${mouseName}`,662,122,13,'#ffd166','left','bold');
+ let y=wrap(tgt.n,662,148,268,22,19,tgt.c,'left','bold');
+ rr(662,y-6,268,62,10);ctx.fillStyle='#0f1922';ctx.fill();
+ [['AP',s2(tgt.ap)],['ML','±'+f2(tgt.ml)],['DV',s2(tgt.dv)]].forEach(([k,v],i)=>{const cx=662+45+i*89;txt(k,cx,y+12,11,'#7f9ab3','center','bold');txt(v,cx,y+34,18,'#fff','center','bold')});
+ txt('mm a partir do bregma · atlas Paxinos & Franklin',796,y+51,10,'#6f8aa3','center');y+=78;
+ const p=tipPos(),nap=state==='ap'?apAt(p.x):apFix,ndv=state==='ap'?null:dvAt(p.y);
+ const okA=Math.abs(nap-tgt.ap)<=tol*.7,okD=ndv!==null&&Math.abs(ndv-tgt.dv)<=tol*.7;
+ txt('Agulha agora',662,y,12,'#9fb3c6');
+ txt(`AP ${s2(nap)}`,662,y+22,17,okA?'#5ee0a0':'#7fe3ff','left','bold');txt(ndv===null?'DV —':`DV ${s2(ndv)}`,800,y+22,17,okD?'#5ee0a0':'#7fe3ff','left','bold');y+=40;
+ const steps=['1. Posicionar AP','2. Descer até o DV','3. Injetar'],si=state==='ap'?0:state==='dv'?1:2;
+ steps.forEach((s,i)=>{txt((i<si?'✓ ':i===si?'▶ ':'  ')+s,662,y+i*20,13,i===si?'#ffd166':i<si?'#5ee0a0':'#6f8aa3','left','bold')});y+=66;
+ hudBar(662,y,268,1-aimT/timeLimit,aimT/timeLimit>.75?'#e05a5a':'#ffd166',`Anestesia: ${Math.max(0,timeLimit-aimT).toFixed(1)} s`);
+ if(state==='ap'){button('FIXAR AP ✓',660,DOWN_BTN.y,272,52,fixAP)}
+ else if(state==='dv'){const on=keys.desc||holdId!==null;rr(DOWN_BTN.x,DOWN_BTN.y,DOWN_BTN.w,DOWN_BTN.h,26);ctx.fillStyle=on?'#ffe066':'#3b6f9a';ctx.fill();
+  txt(on?'Descendo…':'⬇ DESCER',DOWN_BTN.x+DOWN_BTN.w/2,DOWN_BTN.y+24,16,on?'#1f2a35':'#fff','center','bold');txt('(segure)',DOWN_BTN.x+DOWN_BTN.w/2,DOWN_BTN.y+41,11,on?'#1f2a35':'#cfe3f3','center');
+  button('INJETAR',806,DOWN_BTN.y,126,52,inject,'#c0504d')}
+ else txt('Injetando…',796,DOWN_BTN.y+32,18,tgt.c,'center','bold');
+ txt(`Pontos: ${score}`,662,552,15,'#fff','left','bold');
+ progress(684,578);
+ cv.style.cursor=state==='ap'&&inPanel(mouse)?'none':'default';
+}
+
+// ---------- telas ----------
+function drawTitle(){
+ drawUSP();
+ txt('Torre do Relógio · Cidade Universitária, São Paulo',250,620,12,'rgba(255,255,255,.85)','center','bold');
+ panel(478,40,456,560,.86);
+ txt('UNIVERSIDADE DE SÃO PAULO',706,84,15,'#fcb421','center','bold');
+ txt('Instituto de Ciências Biomédicas',706,106,14,'#cfe3f3','center');
+ ctx.strokeStyle='rgba(252,180,33,.5)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(560,122);ctx.lineTo(852,122);ctx.stroke();
+ txt('Cientistas do ICB',706,174,46,'#fff','center','900');
+ txt('Um jogo de neurociência em 3 fases',706,206,18,'#5ee0a0','center','bold');
+ ctx.save();rr(500,220,412,128,12);ctx.clip();ctx.fillStyle='rgba(43,68,89,.6)';ctx.fillRect(500,220,412,128);
+ drawDraP(620,272,.44,true);drawDrB(792,272,.44,true);ctx.restore();
+ for(const[n,x]of[['Dra. P',620],['Dr. B',792]]){rr(x-34,326,68,20,10);ctx.fillStyle='rgba(13,22,31,.85)';ctx.fill();txt(n,x,341,13,'#fff','center','bold')}
+ button('Fase 1 · A respiração ▶',520,364,372,52,()=>{state='story';sceneT=0});
+ button('Fase 2 · Colorir o cérebro ▶',520,430,372,52,startP2,'#7b5cd6');
+ button('Fase 3 · Analisar neurônios ▶',520,496,372,52,startP3,'#d9822b');
+ wrap('Personagens e histórias fictícios, com fins educativos.',706,582,420,14,11,'#6f8aa3','center');
+}
+function drawStory(){
+ drawLab();drawDraP(190,330,1,true);
+ panel(380,30,560,580,.88);
+ txt('Olá! Eu sou a Dra. P',404,76,28,'#fff','left','900');
+ let y=104;
+ const P=['Sou pesquisadora do Instituto de Ciências Biomédicas da USP e estudo como o cérebro controla a respiração.',
+  'Na doença de Parkinson não são só os movimentos que sofrem: muitos pacientes também respiram pior, porque neurônios do tronco encefálico, que comandam a respiração, ficam prejudicados.',
+  'Nossos camundongos com Parkinson estão respirando mal. Preciso injetar uma substância em 5 regiões do tronco encefálico para ajudá-los:'];
+ for(const s of P)y=wrap(s,404,y,512,22,16,'#e6eef5')+8;
+ TARGETS.forEach((o,i)=>{ctx.fillStyle=o.c;circle(414,y-5,6);ctx.fill();txt(`${o.n} (${o.s})`,428,y,15,'#fff','left','bold');y+=23});
+ y+=6;y=wrap('Você vai controlar a minha mão com a seringa. Atenção: se a injeção errar o alvo, o camundongo começa a girar para a direita!',404,y,512,22,16,'#ffd166','left','bold');
+ button('Como funciona? ▶',540,536,260,52,()=>{state='howto';sceneT=0});
+}
+function drawSkullTop(cx,cy){
+ ctx.fillStyle='#e9dfc8';ctx.strokeStyle='#b9ad92';ctx.lineWidth=3;
+ ctx.beginPath();ctx.moveTo(cx,cy-205);ctx.bezierCurveTo(cx+60,cy-205,cx+120,cy-90,cx+118,cy+40);ctx.bezierCurveTo(cx+116,cy+150,cx+70,cy+190,cx,cy+190);
+ ctx.bezierCurveTo(cx-70,cy+190,cx-116,cy+150,cx-118,cy+40);ctx.bezierCurveTo(cx-120,cy-90,cx-60,cy-205,cx,cy-205);ctx.fill();ctx.stroke();
+ ctx.strokeStyle='#9c8f73';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx,cy-200);ctx.lineTo(cx,cy+185);
+ ctx.moveTo(cx-112,cy-80);ctx.quadraticCurveTo(cx-50,cy-40,cx,cy-30);ctx.quadraticCurveTo(cx+50,cy-40,cx+112,cy-80);
+ ctx.moveTo(cx-108,cy+120);ctx.quadraticCurveTo(cx-40,cy+70,cx,cy+90);ctx.quadraticCurveTo(cx+40,cy+70,cx+108,cy+120);ctx.stroke();
+ ctx.strokeStyle='#e0b000';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(cx-10,cy-30);ctx.lineTo(cx+10,cy-30);ctx.moveTo(cx,cy-40);ctx.lineTo(cx,cy-20);ctx.stroke();
+ txt('bregma (0,0)',cx+14,cy-36,14,'#7a5c00','left','bold');txt('lambda',cx+14,cy+84,13,'#7a5c00','left','bold');
+ ctx.fillStyle='#7a5c00';circle(cx,cy+90,4);ctx.fill();
+ ctx.fillStyle='rgba(122,162,255,.5)';for(const o of TARGETS){circle(cx+o.ml*24,cy-30-o.ap*24*.95+0,4);ctx.fill();circle(cx-o.ml*24,cy-30-o.ap*24*.95,4);ctx.fill()}
+ txt('nariz ↑',cx,cy-214,13,'#cfe3f3','center','bold');
+}
+function arrow(x1,y1,x2,y2,c){ctx.strokeStyle=c;ctx.fillStyle=c;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+ const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-12*Math.cos(a-.4),y2-12*Math.sin(a-.4));ctx.lineTo(x2-12*Math.cos(a+.4),y2-12*Math.sin(a+.4));ctx.fill()}
+function drawHowto(){
+ drawLab();panel(20,20,340,600,.88);panel(372,20,568,600,.88);
+ txt('Vista de cima do crânio',190,52,16,'#fff','center','bold');
+ drawSkullTop(190,300);
+ arrow(320,200,320,120,'#5ee0a0');txt('AP +',322,112,12,'#5ee0a0','center','bold');arrow(320,200,320,300,'#ff9f43');txt('AP −',322,318,12,'#ff9f43','center','bold');
+ arrow(60,560,140,560,'#7fe3ff');txt('ML (lado)',100,584,12,'#7fe3ff','center','bold');
+ txt('DV = profundidade ⬇',250,584,12,'#ffd166','center','bold');
+ txt('Como funciona a estereotaxia',396,62,24,'#fff','left','900');
+ let y=94;
+ const R=[['#ffe066','O ponto zero é o bregma: o encontro das suturas do crânio. Todas as coordenadas são medidas a partir dele, em milímetros.'],
+  ['#5ee0a0','AP (anteroposterior): para frente (+) ou para trás (−). Os alvos da respiração ficam bem atrás, no tronco encefálico.'],
+  ['#7fe3ff','ML (médio-lateral): distância da linha do meio. O braço do aparelho estereotáxico já está ajustado para você.'],
+  ['#ffd166','DV (dorsoventral): a profundidade da agulha, medida a partir da superfície do crânio no bregma.'],
+  ['#9fb3c6','As coordenadas são aproximadas do atlas de Paxinos & Franklin para camundongo. Na pesquisa real, elas são ajustadas para cada animal.']];
+ for(const[c,s]of R){ctx.fillStyle=c;circle(402,y-6,5);ctx.fill();y=wrap(s,416,y,500,20,15,'#e6eef5')+8}
+ y+=4;txt('Controles',396,y,18,'#fff','left','bold');y+=24;
+ const C=['1) Mova a mão (mouse ou dedo) até o AP do alvo e clique, ou toque em FIXAR AP.','2) Segure o mouse, o botão DESCER ou a tecla ESPAÇO para descer a agulha. Solte para parar.','3) Chegou no DV certo? Clique em INJETAR (ou ENTER).','Cuidado: a mão treme e a anestesia dura pouco!'];
+ for(const s of C)y=wrap(s,404,y,516,20,15,s.startsWith('Cuidado')?'#ff9f43':'#cfdbe6',s.startsWith('Cuidado')?'left':'left',s.startsWith('Cuidado')?'bold':'normal')+4;
+ button('Começar a Fase 1 ▶',516,550,280,54,newGame);
+}
+function drawGame(){drawLab();drawAtlas();drawHUD()}
+function breathTrace(x,y,w,h,healAt,color){
+ ctx.save();rr(x,y,w,h,8);ctx.fillStyle='#08121a';ctx.fill();ctx.clip();
+ ctx.strokeStyle='rgba(80,200,140,.12)';ctx.lineWidth=1;for(let gx=x;gx<x+w;gx+=20){ctx.beginPath();ctx.moveTo(gx,y);ctx.lineTo(gx,y+h);ctx.stroke()}
+ ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
+ for(let i=0;i<=w;i+=2){const tau=t-(w-i)/90,k=clamp((tau-healAt)/2),
+  bad=(Math.floor(tau/1.6)%3===0?0:1)*(.5+.3*Math.sin(tau*1.3))*Math.sin(tau*TAU*1.4),good=Math.sin(tau*TAU*2.4),v=lerp(bad,good,k);
+  const yy=y+h/2-v*h*.38;i?ctx.lineTo(x+i,yy):ctx.moveTo(x+i,yy)}
+ ctx.stroke();ctx.restore()}
+function drawHit(){
+ drawLab();panel(150,22,660,88,.85);
+ txt('ACERTOU EM CHEIO!',480,68,40,'#5ee0a0','center','900');
+ txt(`${tgt.s} atingido · desvio de ${f2(res.d)} mm · +${res.pts} pontos`,480,96,16,'#cfdbe6','center');
+ const br=Math.sin(t*TAU*1.2);drawMouseFront(260,330,1,br,clamp((rt-.6)/.5));
+ if(rt>.9){const bx=300,by=150;ctx.fillStyle='#fff';rr(bx,by,220,56,16);ctx.fill();ctx.beginPath();ctx.moveTo(bx+30,by+56);ctx.lineTo(bx+14,by+78);ctx.lineTo(bx+60,by+56);ctx.fill();
+  txt('Já respiro melhor!',bx+110,by+35,19,'#1f2a35','center','bold')}
+ txt(res.name,260,BENCH+30,16,'#e6eef5','center','bold');
+ for(const p of particles){if(p.h)heart(p.x,p.y,1.6,p.c);else{ctx.fillStyle=p.c;ctx.fillRect(p.x,p.y,7,7)}}
+ panel(540,130,400,410,.88);
+ txt('VOCÊ SABIA?',560,164,13,'#fcb421','left','bold');
+ let y=wrap(tgt.n,560,192,360,26,22,tgt.c,'left','bold');
+ txt(`AP ${s2(tgt.ap)} · ML ±${f2(tgt.ml)} · DV ${s2(tgt.dv)} mm`,560,y,13,'#9fb3c6','left','bold');y+=28;
+ y=wrap(tgt.info,560,y,360,22,16,'#e6eef5')+12;
+ txt('Respiração do camundongo',560,y,12,'#9fb3c6');breathTrace(560,y+8,360,70,t-1.5+Math.min(rt,1.5),'#5ee0a0');
+ if(rt>1.2)button(lvl+1>=TARGETS.length?'Ver resultado ▶':'Próximo alvo ▶',600,560,280,52,next);
+}
+const BEDDING=[...Array(200)].map(()=>({x:Math.random(),y:Math.random(),r:1+Math.random()*2.5,a:Math.random()*TAU}));
+function drawMiss(){
+ drawLab();panel(30,22,900,84,.85);
+ txt(timedOut?'A anestesia acabou! Injeção fora do alvo.':'Errou o alvo!',480,62,34,'#ff6b6b','center','900');
+ txt(`${res.name} começou a girar para a direita…`,480,92,17,'#cfdbe6','center');
+ const cx=40,cy=124,cw=470,ch=440;
+ rr(cx,cy,cw,ch,18);ctx.fillStyle='#e9d8a6';ctx.fill();
+ for(const b of BEDDING){ctx.fillStyle='rgba(170,140,80,.45)';ell(cx+15+b.x*(cw-30),cy+15+b.y*(ch-30),b.r*2,b.r,b.a);ctx.fill()}
+ ctx.strokeStyle='#9fb3c4';ctx.lineWidth=8;rr(cx,cy,cw,ch,18);ctx.stroke();
+ const ox=cx+cw/2,oy=cy+ch/2+10,R=95*clamp((rt-.6)/.8),th=res.theta,px=ox+R*Math.cos(th-Math.PI/2),py=oy+R*Math.sin(th-Math.PI/2);
+ if(rt>.6){ctx.strokeStyle='rgba(255,255,255,.6)';ctx.lineWidth=4;ctx.lineCap='round';for(let i=1;i<4;i++){ctx.beginPath();ctx.arc(ox,oy,Math.max(1,R+i*10-20),th-Math.PI/2-.9,th-Math.PI/2-.2);ctx.stroke()}}
+ const jit=rt<.6?Math.sin(rt*60)*3:0;drawMouseTop(px+jit,py,th+Math.PI/2,Math.sin(rt*14));
+ rr(cx+cw-118,cy+14,104,44,10);ctx.fillStyle='rgba(13,22,31,.8)';ctx.fill();txt(`↻ ${res.turns} giros`,cx+cw-66,cy+43,18,'#ffd166','center','bold');
+ panel(526,124,404,440,.9);
+ txt('ONDE A AGULHA PAROU?',548,156,13,'#fcb421','left','bold');
+ txt(`Agulha: AP ${s2(apFix)} · DV ${s2(dvFix)}`,548,184,15,'#7fe3ff','left','bold');
+ txt(`Alvo:     AP ${s2(tgt.ap)} · DV ${s2(tgt.dv)}`,548,206,15,'#5ee0a0','left','bold');
+ let y=238;const parts=[];
+ if(Math.abs(res.dAP)>.05)parts.push(`${f2(Math.abs(res.dAP))} mm ${res.dAP>0?'à frente (anterior)':'atrás (posterior)'}`);
+ if(Math.abs(res.dDV)>.05)parts.push(`${f2(Math.abs(res.dDV))} mm ${res.dDV>0?'raso demais (faltou descer)':'fundo demais (desceu além)'}`);
+ y=wrap('Você ficou '+(parts.length?parts.join(' e '):'quase lá')+'.',548,y,360,22,16,'#e6eef5')+6;
+ y=wrap(`A substância atingiu ${res.where}.`,548,y,360,22,16,'#ffb3b3','left','bold')+10;
+ y=wrap(`Dica: a zona de acerto tem raio de ${f2(tol)} mm. Use as réguas de AP (em cima) e DV (à direita).`,548,y,360,20,14,'#9fb3c6')+6;
+ ctx.save();ctx.beginPath();ctx.rect(548,y,360,Math.max(0,540-y));ctx.clip();
+ const zx=548+180,zy=y+60,zs=70;ctx.fillStyle=hexA(tgt.c,.3);ell(zx,zy,tgt.rx*zs,tgt.ry*zs);ctx.fill();ctx.strokeStyle='rgba(255,255,255,.6)';ctx.setLineDash([3,4]);circle(zx,zy,tol*zs);ctx.stroke();ctx.setLineDash([]);
+ ctx.fillStyle='#ff4d6d';circle(zx-res.dAP*zs,zy-res.dDV*zs,5);ctx.fill();ctx.fillStyle='#fff';circle(zx,zy,2.5);ctx.fill();txt('alvo',zx,zy+tol*zs+16,11,'#cfe3f3','center','bold');txt('agulha',zx-res.dAP*zs,zy-res.dDV*zs-10,11,'#ff8fa3','center','bold');ctx.restore();
+ if(rt>1.8)button('Tentar de novo ↺',586,574,284,50,startLevel,'#c0504d');
+}
+// ---------- final ----------
+let ft=0,ffx={};
+const THANKS=['Obrigado, Dra. P!','Respiro bem melhor!','Valeu, ICB-USP!','Que alívio!','Ar fresquinho!'];
+function startFinale(){state='finale';ft=0;particles=[];ffx={}}
+function updateFinale(dt){ft+=dt;
+ if(ft>3&&!ffx.heal){ffx.heal=1;[523,659,784].forEach((f,i)=>snd(f,.5,'sine',.08,0,i*.25))}
+ if(ft>5&&!ffx.party){ffx.party=1;[523,659,784,1046,784,1046].forEach((f,i)=>snd(f,.22,'triangle',.12,0,i*.13));
+  for(let i=0;i<90;i++)particles.push({x:rnd(150,900),y:rnd(80,200),vx:rnd(-200,200),vy:rnd(-300,-50),life:rnd(1.8,3.2),c:['#ff6b8b','#ffd166','#4fd1c5','#7aa2ff','#9b7bff'][i%5],h:i%3===0})}}
+function drawFinale(){
+ drawLab();
+ panel(140,16,680,150,.86);
+ txt('OS 5 ALVOS FORAM ATINGIDOS!',480,52,30,'#5ee0a0','center','900');
+ txt(ft<3?'Antes: respiração irregular, com pausas (apneias)…':ft<5?'A substância está fazendo efeito…':'Depois: respiração forte e regular!',480,78,16,'#e6eef5','center','bold');
+ breathTrace(200,90,560,64,3,ft<3?'#e05a5a':'#5ee0a0');
+ const heal=clamp((ft-3)/2),party=ft>5;
+ drawDraP(90,350,.62,true);
+ for(let i=0;i<5;i++){const x=270+i*135,br=lerp(.3*Math.sin(t*4+i),Math.sin(t*TAU*1.1+i),heal),bob=party?-Math.abs(Math.sin((ft-5)*5-i*.6))*18:0;
+  drawMouseFront(x,BENCH-70+bob,.5,br,party?clamp((ft-5.2-i*.15)/.5):0);
+  txt(TARGETS[i].s,x,BENCH+26,13,TARGETS[i].c,'center','bold');
+  if(party&&ft>5.5+i*.25){const by=i%2?186:232,bw=150;ctx.fillStyle='#fff';rr(x-bw/2,by,bw,30,12);ctx.fill();ctx.beginPath();ctx.moveTo(x-6,by+30);ctx.lineTo(x,by+40);ctx.lineTo(x+6,by+30);ctx.fill();
+   txt(THANKS[i],x,by+20,13,'#1f2a35','center','bold')}}
+ for(const p of particles){if(p.h)heart(p.x,p.y,1.5,p.c);else{ctx.fillStyle=p.c;ctx.fillRect(p.x,p.y,7,7)}}
+ if(party){panel(250,548,460,36,.8);txt('"Obrigado, Dra. P! Agora respiramos melhor!"',480,572,17,'#ffd166','center','bold')}
+ if(ft>7)button('Continuar ▶',380,592,200,40,()=>{state='end';sceneT=0});
+}
+function drawEnd(){
+ drawUSP();panel(150,30,660,580,.9);
+ txt('Fase 1 concluída!',480,84,40,'#fff','center','900');
+ const tries=attempts.reduce((a,b)=>a+b,0),misses=tries-5,stars=misses===0?3:misses<=3?2:1;
+ for(let i=0;i<3;i++){ctx.fillStyle=i<stars?'#fcb421':'#2a3c4e';star(410+i*60,128,22)}
+ txt(`Pontuação: ${score}`,480,186,22,'#ffd166','center','bold');
+ txt(`Injeções: ${tries} · erros: ${misses}`,480,212,15,'#9fb3c6','center');
+ TARGETS.forEach((o,i)=>{const y=246+i*34;ctx.fillStyle=o.c;circle(220,y-5,8);ctx.fill();txt(o.n+` (${o.s})`,238,y,15,'#e6eef5','left','bold');
+  txt(attempts[i]===1?'de primeira!':`${attempts[i]} tentativas`,740,y,14,attempts[i]===1?'#5ee0a0':'#ffb3b3','right','bold')});
+ wrap(stars===3?'Precisão de neurocirurgiã! A Dra. P quer você na equipe do ICB.':stars===2?'Muito bem! Com um pouco mais de prática, você acerta tudo de primeira.':'Os camundongos agradecem a persistência! Treine de novo para acertar de primeira.',480,436,560,22,16,'#e6eef5','center','bold');
+ button('Fase 2 ▶',190,470,280,46,startP2,'#7b5cd6');
+ button('Fase 3 ▶',490,470,280,46,startP3,'#d9822b');
+ button('Jogar de novo ↺',220,540,250,50,newGame);button('Tela inicial',490,540,250,50,()=>{state='title'},'#3b5670');
+}
+function star(x,y,r){ctx.beginPath();for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,rr2=i%2?r*.45:r;ctx.lineTo(x+Math.cos(a)*rr2,y+Math.sin(a)*rr2)}ctx.closePath();ctx.fill()}
+
+// ---------- loop ----------
+const SCREENS={title:drawTitle,story:drawStory,howto:drawHowto,ap:drawGame,dv:drawGame,inject:drawGame,hit:drawHit,miss:drawMiss,finale:drawFinale,end:drawEnd},UPD={};
+let hoverGrab=false;
+function draw(){
+ buttons=[];
+ hoverGrab=false;SCREENS[state]();
+ if(!['ap','dv','inject'].includes(state))cv.style.cursor=hoverGrab?'grab':buttons.some(b=>hit(b,mouse))?'pointer':'default';
+}
+let last=performance.now();
+function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;t+=dt;update(dt);draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+
+function toCanvas(e){const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+function audioOn(){if(!AC){try{AC=new(window.AudioContext||window.webkitAudioContext)()}catch(_){}}}
+cv.addEventListener('pointermove',e=>{if(e.pointerId===holdId)return;const p=toCanvas(e);if(e.pointerType==='touch'&&state==='ap'&&!inPanel(p))return;mouse.x=p.x;mouse.y=p.y});
+cv.addEventListener('pointerdown',e=>{
+ e.preventDefault();audioOn();
+ if(e.pointerType==='touch')touchMode=true;
+ const p=toCanvas(e);
+ for(const b of buttons)if(hit(b,p)){e.btn=true;b.fn();snd(660,.06,'sine',.08);return}
+ if(state==='dv'&&(inPanel(p)||hit(DOWN_BTN,p))){holdId=e.pointerId;try{cv.setPointerCapture(e.pointerId)}catch(_){}return}
+ if(state==='ap'&&inPanel(p)){mouse.x=p.x;mouse.y=p.y;if(e.pointerType!=='touch')fixAP()}
+});
+const endHold=e=>{if(e.pointerId===holdId)holdId=null};
+cv.addEventListener('pointerup',endHold);cv.addEventListener('pointercancel',endHold);
+addEventListener('keydown',e=>{audioOn();
+ if(e.key===' '||e.key==='ArrowDown'){e.preventDefault();if(state==='dv')keys.desc=true}
+ if(state==='ap'&&(e.key==='ArrowLeft'||e.key==='ArrowRight')){e.preventDefault();mouse.x=clamp(mouse.x+(e.key==='ArrowLeft'?-3:3),32,628)}
+ if(e.key==='Enter'){if(state==='ap')fixAP();else if(state==='dv')inject();else if(buttons.length)buttons[buttons.length-1].fn()}
+});
+addEventListener('keyup',e=>{if(e.key===' '||e.key==='ArrowDown')keys.desc=false});
+addEventListener('blur',()=>{keys={};holdId=null});
+
+// ================= FASE 2 · Vamos colorir o cérebro =================
+function drawDrB(x,y,s,happy=true){
+ ctx.save();ctx.translate(x,y);ctx.scale(s,s);
+ ctx.fillStyle='#d9a77f';ctx.fillRect(-13,44,26,40);
+ ctx.fillStyle='#f4f7fa';ctx.strokeStyle='#c4cfd9';ctx.lineWidth=2;
+ ctx.beginPath();ctx.moveTo(-92,180);ctx.quadraticCurveTo(-86,86,0,78);ctx.quadraticCurveTo(86,86,92,180);ctx.closePath();ctx.fill();ctx.stroke();
+ ctx.fillStyle='#3f6fb5';ctx.beginPath();ctx.moveTo(-22,80);ctx.lineTo(0,132);ctx.lineTo(22,80);ctx.closePath();ctx.fill();
+ ctx.fillStyle='#7b5cd6';ctx.beginPath();ctx.moveTo(-5,86);ctx.lineTo(5,86);ctx.lineTo(7,122);ctx.lineTo(0,132);ctx.lineTo(-7,122);ctx.closePath();ctx.fill();
+ ctx.strokeStyle='#c4cfd9';ctx.beginPath();ctx.moveTo(-22,80);ctx.lineTo(-8,150);ctx.moveTo(22,80);ctx.lineTo(8,150);ctx.stroke();
+ ctx.fillStyle='#0b4f8a';rr(24,110,46,26,4);ctx.fill();txt('ICB·USP',47,127,9.5,'#fcb421','center','bold');
+ ctx.fillStyle='#e0b18a';circle(-43,6,9);ctx.fill();circle(43,6,9);ctx.fill();
+ ctx.fillStyle='#e8bd96';ell(0,0,42,52);ctx.fill();
+ ctx.fillStyle='#3a2a1e';ctx.beginPath();ctx.ellipse(0,-22,45,34,0,Math.PI*1.02,Math.PI*1.98);ctx.fill();
+ ctx.beginPath();ctx.moveTo(-44,-16);ctx.quadraticCurveTo(-20,-30,4,-26);ctx.quadraticCurveTo(26,-30,44,-16);ctx.lineTo(44,-36);ctx.lineTo(-44,-36);ctx.closePath();ctx.fill();
+ ctx.beginPath();ctx.moveTo(-41,6);ctx.quadraticCurveTo(-40,62,0,62);ctx.quadraticCurveTo(40,62,41,6);ctx.lineTo(34,10);ctx.quadraticCurveTo(26,36,0,36);ctx.quadraticCurveTo(-26,36,-34,10);ctx.closePath();ctx.fill();
+ ell(0,22,15,5.5);ctx.fill();
+ for(const k of[-1,1]){ctx.fillStyle='#fff';ell(k*17,2,7,5.5);ctx.fill();ctx.fillStyle='#2a1a10';circle(k*17,2,3.8);ctx.fill();ctx.fillStyle='#fff';circle(k*17+1.3,.6,1.1);ctx.fill()}
+ ctx.strokeStyle='#3a2a1e';ctx.lineWidth=4;ctx.lineCap='round';for(const k of[-1,1]){ctx.beginPath();ctx.moveTo(k*8,-13);ctx.lineTo(k*27,-15);ctx.stroke()}
+ ctx.strokeStyle='#b5835e';ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(0,4);ctx.lineTo(-3,14);ctx.lineTo(2,15);ctx.stroke();
+ ctx.strokeStyle='#7a2f35';ctx.lineWidth=3;ctx.beginPath();if(happy)ctx.arc(0,27,9,.15*Math.PI,.85*Math.PI);else ctx.arc(0,40,8,1.2*Math.PI,1.8*Math.PI);ctx.stroke();
+ ctx.restore();
+}
+function drawAb(x,y,s,c,glow,dir=1,a=1){
+ ctx.save();ctx.globalAlpha*=a;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle=c;ctx.lineWidth=3.2*s;ctx.beginPath();
+ ctx.moveTo(x,y+14*s*dir);ctx.lineTo(x,y);ctx.lineTo(x-8*s,y-10*s*dir);ctx.moveTo(x,y);ctx.lineTo(x+8*s,y-10*s*dir);ctx.stroke();
+ if(glow){ctx.shadowColor='#46e08a';ctx.shadowBlur=16*s*glow;ctx.fillStyle='#c8ffdc';circle(x,y+14*s*dir+2.5*s*dir,3.8*s);ctx.fill()}
+ ctx.restore()}
+const STEPS={
+ wash:{n:'Lavar com solução tampão',sh:'Lavar (PBS)',c:'#5aa9e6',t:'3 × 10 min'},
+ serum:{n:'Adicionar soro',sh:'Soro',c:'#f2c14e',t:'1 hora'},
+ prim:{n:'Adicionar anticorpo primário',sh:'Primário',c:'#c38bff',t:'1 noite, na geladeira'},
+ sec:{n:'Adicionar anticorpo secundário',sh:'Secundário',c:'#46e08a',t:'2 horas, no escuro'}
+};
+const ORDER=['wash','serum','prim','wash','sec'];
+const SLOT_HINT=[
+ 'Comece lavando! O corte chega cheio de fixador e sujeirinhas que atrapalham a reação.',
+ 'Antes de qualquer anticorpo vem o bloqueio com soro. Sem ele, o anticorpo gruda em tudo.',
+ 'O primário vem antes do secundário: o secundário só tem onde se ligar se o primário já estiver lá.',
+ 'Entre os dois anticorpos é preciso lavar, para tirar o anticorpo primário que ficou solto.',
+ 'O secundário fluorescente fica por último: ele se liga ao primário e faz a marcação brilhar.'];
+const STEP_RUN=[
+ 'O tampão (PBS) lava o corte e leva embora o fixador e as sujeirinhas. O tecido fica limpo para a reação.',
+ 'As proteínas do soro grudam nos pontos "pegajosos" do tecido. É o bloqueio: assim o anticorpo não gruda onde não deve.',
+ 'O anticorpo primário reconhece só a proteína-alvo (em vermelho), como uma chave que só abre uma fechadura. Alguns sobram soltos no líquido.',
+ 'A segunda lavagem tira os anticorpos primários que ficaram soltos. Só ficam os que estão presos na proteína-alvo.',
+ 'O anticorpo secundário reconhece o primário e carrega uma molécula fluorescente. Ele fica no escuro para não apagar o brilho.'];
+const CW=164,CH=116,COLX=i=>30+i*184,BENCH_Y=124,SLOT_Y=306;
+let cards=[],drag=null,p2tries=0,p2wrong=0,p2msg=null,p2ok=false,p2k=0,p2step=0,mt=0,mol=null;
+function startP2(){
+ cards=shuffle(ORDER).map((ty,i)=>({type:ty,home:i,slot:-1,x:COLX(i),y:BENCH_Y,lock:false,bad:0,ret:false}));
+ p2tries=0;p2wrong=0;p2msg=null;p2ok=false;drag=null;state='p2intro';sceneT=0;
+}
+const slotCard=i=>cards.find(c=>c.slot===i);
+function p2check(){
+ if(cards.some(c=>c.ret))return;
+ p2tries++;let first=-1,good=0;
+ for(let i=0;i<5;i++){const c=slotCard(i);if(c.lock){good++;continue}
+  if(c.type===ORDER[i]){c.lock=true;good++}else{c.bad=1.2;c.ret=true;p2wrong++;if(first<0)first=i}}
+ if(first<0){p2ok=true;p2msg={ok:true};[523,659,784,1046].forEach((f,i)=>snd(f,.18,'triangle',.12,0,i*.1));
+  for(let i=0;i<50;i++)particles.push({x:480,y:360,vx:rnd(-320,320),vy:rnd(-420,-100),life:rnd(1.2,2.2),c:['#5aa9e6','#f2c14e','#c38bff','#46e08a','#ff6b8b'][i%5],h:i%3===0})}
+ else{p2msg={ok:false,i:first,good};snd(180,.35,'sawtooth',.06,-60)}
+}
+UPD.p2order=dt=>{const k=1-Math.exp(-dt*14);
+ for(const c of cards){if(drag&&drag.c===c)continue;
+  if(c.bad>0){c.bad-=dt;if(c.bad<=0&&c.ret){c.ret=false;c.slot=-1}}
+  const tx=c.slot>=0?COLX(c.slot):COLX(c.home),ty=c.slot>=0?SLOT_Y:BENCH_Y;c.x+=(tx-c.x)*k;c.y+=(ty-c.y)*k}};
+function drawIcon(type,x,y){
+ if(type==='wash'){ctx.fillStyle='#22272c';ctx.fillRect(x-6,y-26,12,9);ctx.fillStyle='#5aa9e6';rr(x-14,y-18,28,38,6);ctx.fill();
+  ctx.fillStyle='#f4efe2';ctx.fillRect(x-11,y-6,22,13);txt('PBS',x,y+4,8,'#333','center','bold');
+  for(const[dx,dy]of[[26,-4],[30,12]]){ctx.fillStyle='#8cc8ff';ctx.beginPath();ctx.moveTo(x+dx,y+dy-7);ctx.quadraticCurveTo(x+dx+5,y+dy,x+dx,y+dy+4);ctx.quadraticCurveTo(x+dx-5,y+dy,x+dx,y+dy-7);ctx.fill()}}
+ else if(type==='serum'){const f=()=>{ctx.beginPath();ctx.moveTo(x-11,y-18);ctx.lineTo(x+11,y-18);ctx.lineTo(x+11,y+4);ctx.lineTo(x,y+24);ctx.lineTo(x-11,y+4);ctx.closePath()};
+  ctx.save();f();ctx.clip();ctx.fillStyle='rgba(235,245,255,.25)';ctx.fillRect(x-12,y-20,24,46);ctx.fillStyle='#f2c14e';ctx.fillRect(x-12,y-4,24,30);ctx.restore();
+  f();ctx.strokeStyle='rgba(235,245,255,.85)';ctx.lineWidth=2;ctx.stroke();ctx.fillStyle='#f2c14e';rr(x-13,y-26,26,8,3);ctx.fill()}
+ else drawAb(x,y-2,1.9,STEPS[type].c,type==='sec'?1:0,1);
+}
+function drawCard(c){const st=STEPS[c.type],x=c.x,y=c.y,lift=drag&&drag.c===c;
+ ctx.save();if(lift){ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=20;ctx.shadowOffsetY=8}
+ rr(x,y,CW,CH,14);ctx.fillStyle='#1d2d3c';ctx.fill();ctx.restore();
+ ctx.save();rr(x,y,CW,CH,14);ctx.clip();ctx.fillStyle=hexA(st.c,.2);ctx.fillRect(x,y,CW,64);ctx.restore();
+ const bad=c.bad>0,bc=c.lock?'#5ee0a0':bad?(Math.sin(t*28)>-.3?'#ff5d5d':'#7a2f35'):hexA(st.c,.9);
+ rr(x,y,CW,CH,14);ctx.strokeStyle=bc;ctx.lineWidth=c.lock||bad?3.5:2;ctx.stroke();
+ drawIcon(c.type,x+CW/2,y+34);
+ wrap(st.n,x+CW/2,y+84,CW-16,17,14,'#fff','center','bold');
+ if(c.lock||bad){ctx.fillStyle=c.lock?'#5ee0a0':'#ff5d5d';circle(x+CW-14,y+14,10);ctx.fill();txt(c.lock?'✓':'✗',x+CW-14,y+19,13,'#10202c','center','bold')}
+}
+function drawP2Order(){
+ drawLab();ctx.fillStyle='rgba(13,22,31,.55)';ctx.fillRect(0,0,W,H);
+ panel(20,14,920,86,.92);
+ ctx.save();rr(32,23,68,68,34);ctx.clip();ctx.fillStyle='#2b4459';ctx.fillRect(32,23,68,68);drawDrB(66,64,.44,!p2msg||p2msg.ok);ctx.restore();
+ txt('FASE 2 · Vamos colorir o cérebro',114,44,13,'#c9a7ff','left','bold');
+ txt('Monte o protocolo do Dr. B na ordem certa',114,70,22,'#fff','left','900');
+ txt(touchMode?'Toque em uma etapa ou arraste até um espaço do protocolo.':'Arraste uma etapa (ou clique nela) até um espaço do protocolo.',114,90,13,'#9fb3c6');
+ txt(`Conferências: ${p2tries}`,922,48,14,'#ffd166','right','bold');
+ txt('Etapas na bancada',30,BENCH_Y-8,13,'#cfe3f3','left','bold');
+ txt('Protocolo do Dr. B',30,SLOT_Y-12,13,'#cfe3f3','left','bold');
+ ctx.setLineDash([5,6]);
+ for(let i=0;i<5;i++){rr(COLX(i),BENCH_Y,CW,CH,14);ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=1.5;ctx.stroke()}
+ for(let i=0;i<5;i++){const x=COLX(i);rr(x,SLOT_Y,CW,CH,14);ctx.fillStyle='rgba(10,16,22,.65)';ctx.fill();ctx.strokeStyle='#7f9ab3';ctx.lineWidth=2;ctx.stroke()}
+ ctx.setLineDash([]);
+ for(let i=0;i<5;i++){const x=COLX(i);txt(String(i+1),x+CW/2,SLOT_Y+CH/2+15,44,'rgba(127,154,179,.3)','center','900');
+  if(i<4){const ax=x+CW+10,ay=SLOT_Y+CH/2;ctx.fillStyle='#7f9ab3';ctx.beginPath();ctx.moveTo(ax-5,ay-8);ctx.lineTo(ax+5,ay);ctx.lineTo(ax-5,ay+8);ctx.closePath();ctx.fill()}
+  const c=slotCard(i);if(c&&c.lock)txt(STEPS[c.type].t,x+CW/2,SLOT_Y+CH+18,12,'#5ee0a0','center','bold')}
+ for(const c of cards)drawCard(c);
+ if(!drag&&!p2ok)hoverGrab=cards.some(c=>!c.lock&&!c.ret&&hit({x:c.x,y:c.y,w:CW,h:CH},mouse));
+ panel(20,446,920,106,.9);
+ if(!p2msg){txt('Dica do Dr. B',40,474,14,'#c9a7ff','left','bold');
+  wrap('São duas lavagens com tampão. Pense no que cada reagente faz: os anticorpos precisam encontrar o tecido limpo e bloqueado. Quando os 5 espaços estiverem cheios, confira!',40,498,880,21,16,'#e6eef5')}
+ else if(p2msg.ok){txt('Ordem certa! O protocolo do Dr. B está pronto.',40,478,20,'#5ee0a0','left','900');
+  wrap('Lavar → bloquear com soro → anticorpo primário → lavar → anticorpo secundário. Agora vamos fazer a reação de verdade!',40,504,880,21,16,'#e6eef5')}
+ else{txt(`Ainda não! ${p2msg.good} de 5 no lugar certo.`,40,474,18,'#ff8f8f','left','900');
+  wrap(`Etapa ${p2msg.i+1}: ${SLOT_HINT[p2msg.i]}`,40,500,880,21,16,'#e6eef5')}
+ for(const p of particles){ctx.globalAlpha=clamp(p.life);if(p.h)heart(p.x,p.y,.8,p.c);else{ctx.fillStyle=p.c;ctx.fillRect(p.x-4,p.y-4,8,8)}}ctx.globalAlpha=1;
+ if(p2ok)button('Fazer a reação ▶',330,566,300,52,()=>{state='p2run';p2step=0;p2k=0;initMol()},'#7b5cd6');
+ else if(cards.every(c=>c.slot>=0)&&!cards.some(c=>c.ret))button('Conferir a ordem ✓',330,566,300,52,p2check);
+ else{rr(330,566,300,52,26);ctx.fillStyle='#22323f';ctx.fill();txt(cards.some(c=>c.ret)?'Voltando para a bancada...':'Preencha os 5 espaços',480,598,17,'#7f9ab3','center','bold')}
+}
+cv.addEventListener('pointerdown',e=>{if(state!=='p2order'||e.btn||p2ok)return;const p=toCanvas(e);
+ for(let j=cards.length-1;j>=0;j--){const c=cards[j];if(c.lock||c.ret)continue;
+  if(hit({x:c.x,y:c.y,w:CW,h:CH},p)){drag={c,dx:p.x-c.x,dy:p.y-c.y,sx:p.x,sy:p.y,moved:false,id:e.pointerId};cards.splice(j,1);cards.push(c);
+   try{cv.setPointerCapture(e.pointerId)}catch(_){}snd(520,.05,'sine',.06);return}}});
+cv.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;const p=toCanvas(e);mouse.x=p.x;mouse.y=p.y;
+ if(Math.hypot(p.x-drag.sx,p.y-drag.sy)>8)drag.moved=true;drag.c.x=p.x-drag.dx;drag.c.y=p.y-drag.dy});
+const p2up=e=>{if(!drag||e.pointerId!==drag.id)return;const c=drag.c;
+ if(!drag.moved){if(c.slot>=0)c.slot=-1;else{const i=[0,1,2,3,4].find(i=>!slotCard(i));if(i!==undefined)c.slot=i}}
+ else{const p={x:c.x+CW/2,y:c.y+CH/2};let best=-1;
+  for(let i=0;i<5;i++)if(hit({x:COLX(i)-10,y:SLOT_Y-30,w:CW+20,h:CH+60},p))best=i;
+  if(best>=0){const o=slotCard(best);if(!o||!o.lock){if(o&&o!==c)o.slot=c.slot;c.slot=best}}
+  else if(p.y<SLOT_Y-20)c.slot=-1}
+ drag=null;snd(760,.05,'sine',.06)};
+cv.addEventListener('pointerup',p2up);cv.addEventListener('pointercancel',p2up);
+
+// ---------- a reação ----------
+const SURF=340,ANT=[540,620,700,780,860],STICKY=[580,660,740,820,900];
+function initMol(){mol={debris:[...Array(16)].map(()=>({x:rnd(505,925),y:rnd(140,320),r:rnd(2,4.5)})),
+ strays:[...Array(5)].map(()=>({x:rnd(520,910),y:rnd(150,260),ph:rnd(0,TAU)}))};particles=[];snd(300,.3,'triangle',.06,200)}
+UPD.p2run=dt=>{const b=p2k;p2k=Math.min(1,p2k+dt/3.2);if(b<.3&&p2k>=.3)snd(900,.1,'sine',.06,-300)};
+function drawWell(cx,k,si){const st=STEPS[ORDER[si]],prev=si?STEPS[ORDER[si-1]].c:'#9fb3c6';
+ const top=170,bot=396,wv=ORDER[si]==='wash'?Math.sin(t*5)*4*(1-k)+2:1;
+ const f=()=>{ctx.beginPath();ctx.moveTo(cx-110,top);ctx.lineTo(cx-110,bot-22);ctx.quadraticCurveTo(cx-110,bot,cx-88,bot);ctx.lineTo(cx+88,bot);ctx.quadraticCurveTo(cx+110,bot,cx+110,bot-22);ctx.lineTo(cx+110,top)};
+ const surf=228,mix=k<.35?0:clamp((k-.35)/.4);
+ ctx.save();f();ctx.closePath();ctx.clip();
+ ctx.fillStyle=hexA(prev,.28*(1-mix));ctx.fillRect(cx-112,surf,224,bot-surf+4);ctx.fillStyle=hexA(st.c,.32*mix);ctx.fillRect(cx-112,surf,224,bot-surf+4);
+ ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=2;ctx.beginPath();for(let x=cx-110;x<=cx+110;x+=6)ctx.lineTo(x,surf+Math.sin(x*.06+t*4)*wv);ctx.stroke();
+ const sy=316+Math.sin(t*1.6)*3,gl=si===4?ease(clamp((k-.5)/.5)):0;
+ for(const s of[-1,1]){ctx.fillStyle='#f3d6d6';ell(cx+s*42,sy,50,44);ctx.fill();if(gl){ctx.fillStyle=hexA('#46e08a',.35*gl);ell(cx+s*42,sy,50,44);ctx.fill()}
+  ctx.strokeStyle='#c99a9e';ctx.lineWidth=1.5;ell(cx+s*42,sy,50,44);ctx.stroke();
+  ctx.strokeStyle='rgba(160,100,110,.55)';ell(cx+s*14,sy-8,4,13);ctx.stroke();ctx.beginPath();ctx.moveTo(cx+s*10,sy+22);ctx.quadraticCurveTo(cx+s*44,sy+40,cx+s*80,sy+14);ctx.stroke()}
+ if(si===0||si===3)for(const d of mol.debris.slice(0,8)){const a=1-clamp(k*1.3);if(a<=0)break;ctx.fillStyle=`rgba(150,120,90,${a})`;circle(cx-90+(d.x-505)*.42,surf+20+(d.y-140)*.8-k*60,d.r);ctx.fill()}
+ ctx.restore();
+ f();ctx.strokeStyle='rgba(225,240,255,.8)';ctx.lineWidth=3;ctx.stroke();
+ txt('corte de cérebro',cx,bot+16,12,'#9fb3c6','center','bold');
+ const tipY=k<.3?lerp(110,200,ease(k/.3)):k<.7?200:lerp(200,110,ease((k-.7)/.3));
+ ctx.save();rr(20,84,450,330,14);ctx.clip();micropipette(cx+40,tipY,st.c);
+ if(k>.3&&k<.68){const ph=(t*1.8)%1;ctx.fillStyle=st.c;ell(cx+40,lerp(tipY+4,surf,ph),3,4.5);ctx.fill()}
+ ctx.restore();
+ if(ORDER[si]==='wash'){rr(cx-100,182,46,26,13);ctx.fillStyle='rgba(13,22,31,.85)';ctx.fill();txt('3×',cx-77,200,15,'#8cc8ff','center','bold')}
+}
+function drawMol(k){const si=p2step,st=STEPS[ORDER[si]];
+ ctx.save();rr(490,84,450,330,14);ctx.clip();
+ ctx.fillStyle=hexA(st.c,.07);ctx.fillRect(490,120,450,SURF-120);
+ ctx.fillStyle='#e8b4b8';ctx.fillRect(490,SURF,450,80);ctx.fillStyle='#d79ca1';for(let x=500;x<940;x+=46){ell(x,SURF+36,16,10);ctx.fill()}
+ txt('tecido do cérebro',715,SURF+62,12,'#7a3a44','center','bold');
+ for(const x of STICKY){ctx.fillStyle='#8a9aa8';ctx.beginPath();ctx.arc(x,SURF,6,Math.PI,TAU);ctx.fill()}
+ for(const x of ANT){ctx.fillStyle='#ff5d5d';ctx.beginPath();ctx.moveTo(x,SURF-12);ctx.lineTo(x+7,SURF-4);ctx.lineTo(x,SURF+3);ctx.lineTo(x-7,SURF-4);ctx.closePath();ctx.fill()}
+ if(si===0)for(const d of mol.debris){const a=1-clamp(k*1.2);ctx.fillStyle=`rgba(170,140,100,${a})`;circle(d.x+Math.sin(t+d.x)*3,d.y-ease(k)*240,d.r);ctx.fill()}
+ if(si>=1){const kk=si===1?ease(k):1;for(const x of STICKY){ctx.fillStyle='#f2c14e';circle(x,lerp(130,SURF-6,kk),7);ctx.fill()}}
+ const pY=SURF-12-16,sY=pY-22-16;
+ if(si>=2){const kk=si===2?ease(k):1;for(const x of ANT)drawAb(x,lerp(120,pY,kk),1.6,'#c38bff',0,-1)}
+ if(si===2||si===3)for(const s of mol.strays){const a=si===2?clamp(k*2):1-clamp(k*1.2),dx=si===3?ease(k)*260:0;
+  drawAb(s.x+dx+Math.sin(t*1.5+s.ph)*6,s.y+Math.cos(t*1.2+s.ph)*6,1.4,'#c38bff',0,1,a)}
+ if(si===3){ctx.strokeStyle='rgba(140,200,255,.35)';ctx.lineWidth=2;for(let i=0;i<7;i++){const x=490+((t*220+i*80)%480),y=150+i*24;ctx.beginPath();ctx.moveTo(x-30,y);ctx.lineTo(x,y);ctx.stroke()}}
+ if(si===4){const kk=ease(k),g=clamp((k-.6)/.4);for(const x of ANT)drawAb(x,lerp(110,sY,kk),1.6,'#46e08a',g>0?.4+g:0,-1);
+  if(g>0){ctx.globalCompositeOperation='lighter';for(const x of ANT){const r=ctx.createRadialGradient(x,sY-22,0,x,sY-22,40);r.addColorStop(0,`rgba(70,224,138,${.45*g})`);r.addColorStop(1,'rgba(70,224,138,0)');ctx.fillStyle=r;circle(x,sY-22,40);ctx.fill()}ctx.globalCompositeOperation='source-over'}}
+ ctx.restore();
+ const lg=[['#ff5d5d','proteína-alvo'],['#8a9aa8','ponto pegajoso']];if(si>=1)lg.push(['#f2c14e','soro']);
+ lg.forEach(([c,l],i)=>{const x=510+i*140;ctx.fillStyle=c;circle(x+5,132,5);ctx.fill();txt(l,x+15,137,12,'#cfe3f3','left','bold')});
+}
+function drawP2Run(){
+ drawLab();ctx.fillStyle='rgba(13,22,31,.5)';ctx.fillRect(0,0,W,H);
+ const st=STEPS[ORDER[p2step]],k=clamp(p2k);
+ panel(20,14,920,60,.92);
+ ORDER.forEach((ty,i)=>{const x=34+i*181,c=STEPS[ty].c;rr(x,26,170,36,18);ctx.fillStyle=i<p2step?hexA(c,.85):i===p2step?hexA(c,.3):'#22323f';ctx.fill();
+  if(i===p2step){ctx.strokeStyle=c;ctx.lineWidth=2;ctx.stroke()}
+  txt(`${i<p2step?'✓':(i+1)+'.'} ${STEPS[ty].sh}`,x+85,49,14,i<p2step?'#10202c':'#fff','center','bold')});
+ panel(20,84,450,330,.85);txt('No poço da placa',40,110,14,'#cfe3f3','left','bold');
+ drawWell(245,k,p2step);
+ panel(490,84,450,330,.85);txt('Zoom: o que acontece no tecido',510,110,14,'#cfe3f3','left','bold');
+ drawMol(k);
+ panel(20,424,920,128,.92);
+ txt(`Etapa ${p2step+1} de 5 · ${st.n}`,40,454,20,st.c,'left','900');txt(`Tempo: ${st.t}`,920,454,15,'#ffd166','right','bold');
+ wrap(STEP_RUN[p2step],40,484,870,22,16,'#e6eef5');
+ if(k>=1)button(p2step<4?'Próxima etapa ▶':'Ver no microscópio ▶',330,566,300,52,()=>{if(p2step<4){p2step++;p2k=0;snd(300,.3,'triangle',.06,200)}else{state='p2micro';mt=0;particles=[];snd(196,.8,'sine',.08,200)}},'#7b5cd6');
+ else{rr(330,566,300,52,26);ctx.fillStyle='#22323f';ctx.fill();rr(330,566,300*k,52,26);ctx.fillStyle=hexA(st.c,.35);ctx.fill();txt('Reagindo...',480,598,17,'#cfe3f3','center','bold')}
+}
+
+// ---------- microscópio ----------
+const NEUR=(()=>{const a=[];const cl=[[200,400,60,26,16],[400,400,60,26,16],[300,390,24,18,6]];
+ for(const[cx,cy,rx,ry,n]of cl)for(let i=0;i<n;i++){const ang=rnd(0,TAU),r=Math.sqrt(Math.random());
+  a.push({x:cx+Math.cos(ang)*rx*r,y:cy+Math.sin(ang)*ry*r,s:rnd(3.5,6.5),d:rnd(.2,2.2),den:[...Array(2+Math.floor(rnd(0,3)))].map(()=>({a:rnd(0,TAU),l:rnd(14,34),b:rnd(-.6,.6)}))})}return a})();
+UPD.p2micro=dt=>{mt+=dt};
+function drawP2Micro(){
+ ctx.fillStyle='#05080b';ctx.fillRect(0,0,W,H);
+ const cx=300,cy=320,R=272;
+ ctx.save();circle(cx,cy,R);ctx.clip();ctx.fillStyle='#010402';ctx.fillRect(0,0,W,H);
+ const a0=clamp(mt/1.2);
+ for(const s of[-1,1]){ctx.fillStyle=`rgba(20,60,36,${.35*a0})`;ell(cx+s*112,cy-10,112,150);ctx.fill();ctx.strokeStyle=`rgba(70,224,138,${.18*a0})`;ctx.lineWidth=2;ctx.stroke()}
+ ctx.fillStyle='#010402';ell(cx,cy-40,8,14);ctx.fill();
+ ctx.globalCompositeOperation='lighter';
+ for(const n of NEUR){const a=clamp((mt-n.d)/.7);if(a<=0)continue;
+  ctx.strokeStyle=`rgba(70,224,138,${.55*a})`;ctx.lineWidth=1.6;ctx.lineCap='round';
+  for(const d of n.den){ctx.beginPath();ctx.moveTo(n.x,n.y);const ex=n.x+Math.cos(d.a)*d.l,ey=n.y+Math.sin(d.a)*d.l;ctx.quadraticCurveTo(n.x+Math.cos(d.a+d.b)*d.l*.6,n.y+Math.sin(d.a+d.b)*d.l*.6,ex,ey);ctx.stroke()}
+  const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.s*3.2);g.addColorStop(0,`rgba(200,255,220,${a})`);g.addColorStop(.3,`rgba(70,224,138,${.8*a})`);g.addColorStop(1,'rgba(70,224,138,0)');
+  ctx.fillStyle=g;circle(n.x,n.y,n.s*3.2);ctx.fill()}
+ ctx.globalCompositeOperation='source-over';
+ ctx.fillStyle='#e6eef5';ctx.fillRect(cx+80,cy+196,60,4);txt('500 µm',cx+110,cy+216,11,'#e6eef5','center','bold');
+ ctx.restore();
+ ctx.strokeStyle='#1c242c';ctx.lineWidth=18;circle(cx,cy,R+8);ctx.stroke();ctx.strokeStyle='#33404c';ctx.lineWidth=2;circle(cx,cy,R+17);ctx.stroke();
+ panel(600,30,340,580,.9);
+ txt('MICROSCÓPIO DE FLUORESCÊNCIA',616,62,12,'#46e08a','left','bold');
+ txt('O cérebro brilhou!',616,94,26,'#fff','left','900');
+ let y=124;
+ for(const s of['Os neurônios que têm a proteína-alvo aparecem em verde: é o anticorpo secundário fluorescente.',
+  'Neste exemplo, o anticorpo primário reconhece a tirosina hidroxilase (TH), uma enzima dos neurônios que produzem dopamina. São esses neurônios que se perdem na doença de Parkinson.',
+  'Contando os neurônios verdes, o Dr. B descobre quanto a doença afetou o cérebro e se um tratamento ajudou.'])y=wrap(s,616,y,304,20,15,'#e6eef5')+8;
+ ctx.save();rr(616,y+4,308,150,12);ctx.clip();ctx.fillStyle='rgba(43,68,89,.6)';ctx.fillRect(616,y+4,308,150);drawDrB(690,y+66,.55,true);ctx.restore();
+ rr(742,y+30,170,52,14);ctx.fillStyle='#fff';ctx.fill();ctx.beginPath();ctx.moveTo(748,y+60);ctx.lineTo(732,y+70);ctx.lineTo(752,y+72);ctx.fill();
+ wrap('Obrigado pela ajuda! Ficou lindo!',827,y+52,150,17,14,'#1d2d3c','center','bold');
+ if(mt>2.6)button('Etapa 2: marcação tripla ▶',630,544,280,50,startQuiz,'#7b5cd6');
+}
+function drawP2End(){
+ drawUSP();panel(150,30,660,580,.9);
+ txt('Fase 2 concluída!',480,84,40,'#fff','center','900');
+ const errs=(p2tries-1)+(mixTries-1)+quizWrong,stars=errs<=0?3:errs<=3?2:1;
+ for(let i=0;i<3;i++){ctx.fillStyle=i<stars?'#fcb421':'#2a3c4e';star(410+i*60,128,22)}
+ txt(`Ordem: ${p2tries} conferência(s) · Perguntas: ${quizWrong} erro(s) · Marcação tripla: ${mixTries} tentativa(s)`,480,186,14,'#9fb3c6','center');
+ txt('O protocolo de imunofluorescência',480,224,18,'#c9a7ff','center','bold');
+ ORDER.forEach((ty,i)=>{const y=260+i*32,c=STEPS[ty].c;ctx.fillStyle=c;circle(220,y-5,8);ctx.fill();
+  txt(`${i+1}. ${STEPS[ty].n}`,238,y,15,'#e6eef5','left','bold');txt(STEPS[ty].t,740,y,14,'#ffd166','right','bold')});
+ wrap('No laboratório de verdade, depois do secundário ainda se lava de novo e o corte é montado em uma lâmina para ir ao microscópio.',480,434,560,20,14,'#9fb3c6','center');
+ CELLT.forEach((c,i)=>{const x=250+i*160,co=colOf(c.k);ctx.fillStyle=co.c;circle(x,494,7);ctx.fill();txt(`${c.n}: ${co.n}`,x+12,499,14,'#e6eef5','left','bold')});
+ button('Jogar de novo ↺',170,540,200,50,startP2);button('Fase 3 ▶',380,540,200,50,startP3,'#d9822b');button('Tela inicial',590,540,200,50,()=>{state='title'},'#3b5670');
+}
+Object.assign(SCREENS,{p2intro:drawP2Intro,p2order:drawP2Order,p2run:drawP2Run,p2micro:drawP2Micro,p2end:drawP2End});
+function drawP2Intro(){
+ drawLab();drawDrB(190,330,1,true);
+ panel(380,30,560,580,.88);
+ txt('Olá! Eu sou o Dr. B',404,76,28,'#fff','left','900');
+ let y=104;
+ for(const s of['Assim como a Dra. P, sou pesquisador do Instituto de Ciências Biomédicas da USP. Hoje vamos colorir o cérebro!',
+  'Para isso usamos anticorpos: proteínas que reconhecem uma única molécula, como uma chave que só abre uma fechadura. Se o anticorpo carrega uma molécula fluorescente, dá para ver no microscópio exatamente onde aquela molécula está.',
+  'Os cortes de cérebro de camundongo já estão fixados e prontos no poço da placa. Agora falta a reação: a imunofluorescência.'])y=wrap(s,404,y,512,22,16,'#e6eef5')+8;
+ drawAb(424,y+6,1.5,'#c38bff',0,1);wrap('Anticorpo primário: reconhece a proteína que queremos achar.',448,y+10,468,20,15,'#fff','left','bold');y+=44;
+ drawAb(424,y+6,1.5,'#46e08a',1,1);wrap('Anticorpo secundário: reconhece o primário e brilha.',448,y+10,468,20,15,'#fff','left','bold');y+=44;
+ wrap('Anotei as 5 etapas da reação, mas embaralhei a ordem! Descubra a ordem certa para a marcação funcionar.',404,y,512,22,16,'#ffd166','left','bold');
+ button('Descobrir a ordem ▶',540,536,260,52,()=>{state='p2order';sceneT=0},'#7b5cd6');
+}
+
+// ---------- Fase 2 · Etapa 2: marcação tripla ----------
+const HOSTS={coelho:['red','purple'],camundongo:['green','purple'],rato:['red','green']},HK=Object.keys(HOSTS);
+const COLORS={red:{n:'vermelho',c:'#ff4d5e'},green:{n:'verde',c:'#3ee07a'},purple:{n:'roxo',c:'#b56cff'}};
+const CELLT=[{k:'neu',n:'Neurônio',pl:'os neurônios',ab:'anti-neurônio'},{k:'ast',n:'Astrócito',pl:'os astrócitos',ab:'anti-astrócito'},{k:'mic',n:'Micróglia',pl:'a micróglia',ab:'anti-micróglia'}];
+const QUIZ=[
+ {q:'Se o anti-neurônio e o anti-astrócito forem os dois feitos em coelho, o que o secundário anti-coelho vai fazer?',
+  o:['Pintar neurônios e astrócitos da mesma cor','Pintar só os neurônios','Pintar cada um de uma cor'],a:0,
+  ok:'Isso! O anti-coelho reconhece qualquer anticorpo feito em coelho. Ele não sabe diferenciar o anti-neurônio do anti-astrócito.',
+  no:'Não é bem isso. O anti-coelho reconhece qualquer anticorpo feito em coelho, não só um deles.'},
+ {q:'Então, para cada célula ficar de uma cor, como devem ser os 3 anticorpos primários?',
+  o:['Todos feitos no mesmo animal','Cada um feito em um animal diferente','Tanto faz o animal'],a:1,
+  ok:'Exato! Com primários de coelho, camundongo e rato, cada secundário reconhece só um deles.',
+  no:'Pense de novo: se dois primários vierem do mesmo animal, o mesmo secundário gruda nos dois.'},
+ {q:'E os anticorpos secundários, como escolher?',
+  o:['Três secundários da mesma cor','Só o anti-coelho já basta','Um para cada animal do primário, cada um de uma cor'],a:2,
+  ok:'Perfeito! Cada primário precisa do seu secundário (anti-coelho, anti-camundongo, anti-rato) e as 3 cores têm que ser diferentes.',
+  no:'Pense de novo: cada primário precisa do seu secundário, e com cores iguais não dá para diferenciar as células.'}];
+let quiz={i:0,sel:null},quizWrong=0,mix=null,mixTries=0,mixRes=null,FIELD=null;
+function startQuiz(){quiz={i:0,sel:null};quizWrong=0;mixTries=0;mix={host:{neu:null,ast:null,mic:null},col:{coelho:null,camundongo:null,rato:null}};state='p2quiz';sceneT=0}
+function genCell(k){const segs=[],n=k==='neu'?4:k==='ast'?12:5;
+ for(let i=0;i<n;i++){const a=i*TAU/n+rnd(-.35,.35),l=k==='neu'?rnd(26,42):k==='ast'?rnd(13,24):rnd(12,22);
+  const kids=[...Array(k==='ast'?1:2)].map(()=>({f:rnd(.4,.75),a:a+rnd(-.9,.9),l:l*rnd(.3,.5)}));segs.push({a,l,b:rnd(-.3,.3),kids})}
+ if(k==='neu')segs.push({a:rnd(0,TAU),l:62,b:.2,kids:[],ax:1});
+ return{k,segs,r:k==='neu'?6.5:k==='ast'?4.2:3.4}}
+const ICON={neu:genCell('neu'),ast:genCell('ast'),mic:genCell('mic')};
+function drawCell(g,x,y,s,col,a=1,glow=false){
+ ctx.save();ctx.globalAlpha*=a;ctx.strokeStyle=col;ctx.lineCap='round';
+ const w=(g.k==='neu'?2.2:g.k==='ast'?1.7:1.2)*s;
+ for(const sg of g.segs){ctx.lineWidth=sg.ax?w*.6:w;const ex=x+Math.cos(sg.a)*sg.l*s,ey=y+Math.sin(sg.a)*sg.l*s;
+  ctx.beginPath();ctx.moveTo(x,y);ctx.quadraticCurveTo(x+Math.cos(sg.a+sg.b)*sg.l*.55*s,y+Math.sin(sg.a+sg.b)*sg.l*.55*s,ex,ey);ctx.stroke();
+  ctx.lineWidth=w*.7;for(const kd of sg.kids){const sx=x+Math.cos(sg.a)*sg.l*kd.f*s,sy=y+Math.sin(sg.a)*sg.l*kd.f*s;ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(sx+Math.cos(kd.a)*kd.l*s,sy+Math.sin(kd.a)*kd.l*s);ctx.stroke()}}
+ if(glow){ctx.shadowColor=col;ctx.shadowBlur=12*s}
+ ctx.fillStyle=col;if(g.k==='mic')ell(x,y,g.r*1.3*s,g.r*s,.6);else circle(x,y,g.r*s);ctx.fill();ctx.restore()}
+function chip(label,x,y,w,h,on,col,fn,dot){const b={x,y,w,h,fn};buttons.push(b);const hov=hit(b,mouse);
+ rr(x,y,w,h,h/2);ctx.fillStyle=on?col:hov?'#2f4558':'#22323f';ctx.fill();if(on){ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke()}
+ if(dot){ctx.fillStyle=dot;circle(x+20,y+h/2,7);ctx.fill();if(on){ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke()}}
+ txt(label,x+w/2+(dot?10:0),y+h/2+5,15,on?'#fff':'#cfe3f3','center','bold')}
+function drawFridge(x,y,w){
+ txt('NA GELADEIRA DO DR. B',x,y,12,'#fcb421','left','bold');y+=24;
+ txt('Primários',x,y,14,'#fff','left','bold');y+=19;
+ for(const c of CELLT){txt(`${c.ab}`,x+8,y,13,'#cfe3f3','left','bold');txt('coelho · camundongo · rato',x+w,y,12,'#9fb3c6','right');y+=18}
+ y+=8;txt('Secundários',x,y,14,'#fff','left','bold');y+=19;
+ for(const h of HK){txt(`anti-${h}`,x+8,y,13,'#cfe3f3','left','bold');HOSTS[h].forEach((c,i)=>{const cx=x+w-128+i*72;ctx.fillStyle=COLORS[c].c;circle(cx,y-4,5);ctx.fill();txt(COLORS[c].n,cx+8,y,12,'#cfe3f3')});y+=18}
+ return y}
+function drawQuiz(){
+ drawLab();ctx.fillStyle='rgba(13,22,31,.5)';ctx.fillRect(0,0,W,H);
+ ctx.save();rr(20,20,300,300,14);ctx.clip();ctx.fillStyle='rgba(43,68,89,.75)';ctx.fillRect(20,20,300,300);drawDrB(170,170,.82,quiz.sel===null||quiz.sel===QUIZ[quiz.i].a);ctx.restore();
+ panel(20,330,300,290,.92);drawFridge(36,358,268);
+ panel(336,20,604,600,.92);const Q=QUIZ[quiz.i];
+ txt('ETAPA 2 · MARCAÇÃO TRIPLA',360,52,12,'#c9a7ff','left','bold');txt(`Pergunta ${quiz.i+1} de ${QUIZ.length}`,916,52,13,'#ffd166','right','bold');
+ let y=wrap('Agora quero marcar 3 tipos de células ao mesmo tempo: neurônios, astrócitos e micróglia, cada um de uma cor. Como eu faço?',360,82,556,21,15,'#9fb3c6');
+ y=wrap(Q.q,360,y+12,556,27,21,'#fff','left','900');
+ const answered=quiz.sel!==null&&quiz.sel===Q.a;
+ Q.o.forEach((o,i)=>{const yy=Math.max(y+10,250)+i*64,b={x:360,y:yy,w:556,h:54,fn:()=>{if(answered)return;quiz.sel=i;if(i===Q.a)[523,659,784].forEach((f,j)=>snd(f,.15,'triangle',.1,0,j*.08));else{quizWrong++;snd(180,.35,'sawtooth',.06,-60)}}};
+  buttons.push(b);const hov=hit(b,mouse)&&!answered,st=quiz.sel===i?(i===Q.a?1:2):0;
+  rr(b.x,b.y,b.w,b.h,14);ctx.fillStyle=st===1?'rgba(47,179,122,.35)':st===2?'rgba(192,80,77,.35)':hov?'#2f4558':'#1d2d3c';ctx.fill();
+  ctx.strokeStyle=st===1?'#5ee0a0':st===2?'#ff5d5d':'rgba(127,154,179,.5)';ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle=st===1?'#5ee0a0':st===2?'#ff5d5d':'#3b5670';circle(b.x+28,b.y+27,14);ctx.fill();txt('ABC'[i],b.x+28,b.y+33,15,'#fff','center','bold');
+  wrap(o,b.x+54,b.y+33,490,20,16,'#fff','left','bold')});
+ if(quiz.sel!==null){const ok=quiz.sel===Q.a;rr(360,466,556,78,12);ctx.fillStyle=ok?'rgba(47,179,122,.15)':'rgba(192,80,77,.15)';ctx.fill();
+  wrap(ok?Q.ok:Q.no,376,492,524,20,15,ok?'#9ff0c8':'#ffb3b3','left','bold')}
+ if(answered)button(quiz.i<QUIZ.length-1?'Próxima pergunta ▶':'Montar a marcação ▶',488,556,300,50,()=>{if(quiz.i<QUIZ.length-1){quiz.i++;quiz.sel=null}else{state='p2mix';sceneT=0}},'#7b5cd6');
+}
+function drawMix(){
+ drawLab();ctx.fillStyle='rgba(13,22,31,.55)';ctx.fillRect(0,0,W,H);
+ panel(20,14,920,86,.92);
+ ctx.save();rr(32,23,68,68,34);ctx.clip();ctx.fillStyle='#2b4459';ctx.fillRect(32,23,68,68);drawDrB(66,64,.44,true);ctx.restore();
+ txt('FASE 2 · ETAPA 2 · Marcação tripla',114,44,13,'#c9a7ff','left','bold');
+ txt('Pinte cada tipo de célula de uma cor',114,70,22,'#fff','left','900');
+ txt('Escolha o animal de cada anticorpo primário e a cor de cada secundário.',114,90,13,'#9fb3c6');
+ txt(`Tentativas: ${mixTries}`,922,48,14,'#ffd166','right','bold');
+ CELLT.forEach((c,i)=>{const y0=110+i*128;panel(20,y0,920,118,.9);
+  ctx.fillStyle='#0b1218';circle(78,y0+59,46);ctx.fill();drawCell(ICON[c.k],78,y0+59,c.k==='neu'?.95:1.5,'#e6eef5');
+  txt(c.n,140,y0+32,20,'#fff','left','900');txt(`Primário ${c.ab} feito em:`,140,y0+54,13,'#9fb3c6');
+  HK.forEach((h,j)=>chip(h[0].toUpperCase()+h.slice(1),140+j*134,y0+66,126,38,mix.host[c.k]===h,'#3b6f9a',()=>{mix.host[c.k]=h}));
+  ctx.strokeStyle='rgba(127,154,179,.25)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(560,y0+16);ctx.lineTo(560,y0+102);ctx.stroke();
+  const h=mix.host[c.k];
+  if(!h)txt('Escolha primeiro o animal do primário',580,y0+66,14,'#7f9ab3');
+  else{txt(`Secundário anti-${h}, cor:`,580,y0+54,14,'#fff','left','bold');
+   HOSTS[h].forEach((cl,j)=>chip(COLORS[cl].n,580+j*170,y0+66,158,38,mix.col[h]===cl,hexA(COLORS[cl].c,.75),()=>{mix.col[h]=cl},COLORS[cl].c));
+   const sh=CELLT.filter(o=>o!==c&&mix.host[o.k]===h).map(o=>o.n.toLowerCase());
+   if(sh.length)txt(`O mesmo secundário também vai na ${sh.join(' e ')}`.replace('na astrócito','no astrócito').replace('na neurônio','no neurônio'),580,y0+30,12,'#ffd166','left','bold')}});
+ txt('Lembre: anti-coelho (vermelho ou roxo) · anti-camundongo (verde ou roxo) · anti-rato (vermelho ou verde)',480,520,13,'#cfe3f3','center','bold');
+ const ready=CELLT.every(c=>mix.host[c.k]&&mix.col[mix.host[c.k]]);
+ if(ready)button('Fazer a marcação ▶',330,552,300,52,()=>{mixTries++;mixRes=mixEval();FIELD=genField();state='p2mixres';mt=0;snd(196,.8,'sine',.08,200)},'#7b5cd6');
+ else{rr(330,552,300,52,26);ctx.fillStyle='#22323f';ctx.fill();txt('Escolha animal e cor das 3 células',480,584,15,'#7f9ab3','center','bold')}
+}
+const colOf=k=>COLORS[mix.col[mix.host[k]]];
+function mixEval(){const m=[],seen={};
+ for(let i=0;i<3;i++)for(let j=i+1;j<3;j++){const A=CELLT[i],B=CELLT[j],ha=mix.host[A.k],hb=mix.host[B.k];
+  if(ha===hb)m.push(`${A.n} e ${B.n.toLowerCase()} usam primário de ${ha}: o anti-${ha} pintou os dois de ${colOf(A.k).n}.`);
+  else if(mix.col[ha]===mix.col[hb]&&!seen[ha+hb]){seen[ha+hb]=seen[hb+ha]=1;m.push(`O anti-${ha} e o anti-${hb} têm a mesma cor (${colOf(A.k).n}): ${A.pl} e ${B.pl} ficaram iguais.`)}}
+ return{ok:!m.length,m}}
+function genField(){const pts=[],types=[...Array(7).fill('neu'),...Array(8).fill('ast'),...Array(9).fill('mic')];
+ for(const k of types){let p,tries=0;do{const a=rnd(0,TAU),r=Math.sqrt(Math.random())*225;p={x:300+Math.cos(a)*r,y:320+Math.sin(a)*r};tries++}while(tries<60&&pts.some(q=>Math.hypot(q.x-p.x,q.y-p.y)<(k==='neu'?70:48)));
+  pts.push({...p,g:genCell(k),d:rnd(.2,1.8),s:k==='neu'?1:1.25})}return pts}
+UPD.p2mixres=dt=>{mt+=dt};
+function drawMixRes(){
+ ctx.fillStyle='#05080b';ctx.fillRect(0,0,W,H);const cx=300,cy=320,R=272;
+ ctx.save();circle(cx,cy,R);ctx.clip();ctx.fillStyle='#010203';ctx.fillRect(0,0,W,H);ctx.globalCompositeOperation='lighter';
+ for(const p of FIELD){const a=clamp((mt-p.d)/.7);if(a>0)drawCell(p.g,p.x,p.y,p.s,colOf(p.g.k).c,a*.95,true)}
+ ctx.globalCompositeOperation='source-over';ctx.fillStyle='#e6eef5';ctx.fillRect(cx+80,cy+196,60,4);txt('50 µm',cx+110,cy+216,11,'#e6eef5','center','bold');ctx.restore();
+ ctx.strokeStyle='#1c242c';ctx.lineWidth=18;circle(cx,cy,R+8);ctx.stroke();ctx.strokeStyle='#33404c';ctx.lineWidth=2;circle(cx,cy,R+17);ctx.stroke();
+ panel(600,30,340,580,.92);const ok=mixRes.ok;
+ txt('MARCAÇÃO TRIPLA',616,62,12,ok?'#46e08a':'#ff8f8f','left','bold');
+ txt(ok?'Cada célula de uma cor!':'Ops! Cores misturadas',616,94,24,'#fff','left','900');
+ let y=124;
+ for(const c of CELLT){const h=mix.host[c.k],co=colOf(c.k);ctx.fillStyle=co.c;circle(624,y-5,7);ctx.fill();
+  txt(`${c.n}: ${co.n}`,638,y,15,'#fff','left','bold');y=wrap(`${c.ab} (${h}) + anti-${h} ${co.n}`,638,y+18,290,17,13,'#9fb3c6')+8}
+ if(ok){y=wrap('Neurônios com seus dendritos longos, astrócitos em forma de estrela e a micróglia, pequena e cheia de ramos finos: dá para ver cada tipo de célula separado!',616,y+4,308,19,14,'#e6eef5')+8;
+  y=wrap('Curiosidade: como o cérebro é de camundongo, o anti-camundongo pode grudar também nos anticorpos do próprio animal. Na pesquisa real, isso pede um bloqueio extra.',616,y,308,17,12,'#9fb3c6')+8;
+  if(mt>2.2)button('Continuar ▶',650,548,240,50,()=>{state='p2end';sceneT=0},'#7b5cd6')}
+ else{for(const s of mixRes.m)y=wrap(s,616,y+4,308,20,15,'#ffb3b3','left','bold')+6;
+  y=wrap('Dica: use um animal diferente para cada primário e confira se os 3 secundários ficaram com cores diferentes.',616,y+6,308,19,14,'#e6eef5');
+  if(mt>1.5)button('Tentar de novo ↺',650,548,240,50,()=>{state='p2mix'},'#c0504d')}
+}
+Object.assign(SCREENS,{p2quiz:drawQuiz,p2mix:drawMix,p2mixres:drawMixRes});
+
+// ---------- Fase 3: Analisar os neurônios ----------
+function srand(s){let a=s>>>0;return()=>{a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function genTree(seed,cx,cy,o){
+ const R=srand(seed),r=(a,b)=>a+R()*(b-a),segs=[];
+ function br(x,y,a,l,w,d){let px=x,py=y;for(let i=0;i<5;i++){a+=r(-.16,.16);const nx=px+Math.cos(a)*l/5,ny=py+Math.sin(a)*l/5;segs.push({x1:px,y1:py,x2:nx,y2:ny,w:Math.max(.7,w*(1-i*.06)),k:'d'});px=nx;py=ny}
+  if(d>0){const s=r(.35,.6);br(px,py,a-s,l*r(.62,.82),w*.72,d-1);if(R()<o.split)br(px,py,a+s*r(.8,1.2),l*r(.55,.78),w*.72,d-1)}}
+ const ax=o.axA??r(0,TAU);
+ for(let i=0;i<o.n;i++){const a=ax+(i+1)*TAU/(o.n+1)+r(-.3,.3);br(cx+Math.cos(a)*o.soma*.7,cy+Math.sin(a)*o.soma*.7,a,o.len*r(.85,1.15),o.w,o.depth)}
+ let a=ax,px=cx+Math.cos(a)*o.soma*.8,py=cy+Math.sin(a)*o.soma*.8;
+ for(let i=0;i<16;i++){a+=r(-.12,.12);const nx=px+Math.cos(a)*o.axon/16,ny=py+Math.sin(a)*o.axon/16;segs.push({x1:px,y1:py,x2:nx,y2:ny,w:Math.max(.7,o.w*.36),k:'a'});px=nx;py=ny}
+ return{cx,cy,soma:o.soma,segs,rot:r(0,TAU),nuc:{x:cx+r(-.1,.1)*o.soma,y:cy+r(-.1,.1)*o.soma,r:o.soma*.42},a:o.a??1}}
+function drawTree(g,t,col,glow=10){
+ g.save();g.globalAlpha=t.a;g.strokeStyle=col;g.fillStyle=col;g.lineCap='round';g.shadowColor=col;g.shadowBlur=glow;
+ for(const s of t.segs){g.lineWidth=s.w;g.beginPath();g.moveTo(s.x1,s.y1);g.lineTo(s.x2,s.y2);g.stroke()}
+ t.segs.forEach((s,i)=>{if(s.k==='a'&&i%3===0){g.beginPath();g.arc(s.x2,s.y2,s.w*1.7,0,TAU);g.fill()}});
+ g.beginPath();g.ellipse(t.cx,t.cy,t.soma,t.soma*.8,t.rot,0,TAU);g.fill();
+ g.shadowBlur=0;g.fillStyle='rgba(220,255,235,.35)';g.beginPath();g.ellipse(t.cx,t.cy,t.soma*.8,t.soma*.62,t.rot,0,TAU);g.fill();
+ g.fillStyle='#04160c';g.beginPath();g.arc(t.nuc.x,t.nuc.y,t.nuc.r,0,TAU);g.fill();g.restore()}
+function bake(fn){const c=document.createElement('canvas');c.width=W;c.height=H;const g=c.getContext('2d');g.fillStyle='#010203';g.fillRect(0,0,W,H);
+ for(let i=0;i<500;i++){g.fillStyle=`rgba(70,224,138,${rnd(.02,.09)})`;g.fillRect(rnd(0,W),rnd(0,H),rnd(1,3),rnd(1,3))}fn(g);return c}
+const FX=300,FY=320,FR=272,G='#46e08a';
+function drawScope(img,bar){ctx.fillStyle='#05080b';ctx.fillRect(0,0,W,H);ctx.save();circle(FX,FY,FR);ctx.clip();ctx.drawImage(img,0,0);
+ if(bar){ctx.fillStyle='#e6eef5';ctx.fillRect(FX+80,FY+196,60,4);txt(bar,FX+110,FY+216,11,'#e6eef5','center','bold')}ctx.restore();
+ ctx.strokeStyle='#1c242c';ctx.lineWidth=18;circle(FX,FY,FR+8);ctx.stroke();ctx.strokeStyle='#33404c';ctx.lineWidth=2;circle(FX,FY,FR+17);ctx.stroke()}
+const inField=p=>Math.hypot(p.x-FX,p.y-FY)<FR;
+let p3t=0,p3err=0,p3msg=null,FIELDS=[],fi=0,SH=[],qi=0,qsel=null;
+const REGIONS=[
+ {s:'RTN',n:'Núcleo retrotrapezoide',m:'Phox2b',nuc:1,ctrl:8,pd:3,tr:7},
+ {s:'preBötC',n:'Complexo pré-Bötzinger',m:'NK1R',ctrl:7,pd:3,tr:6},
+ {s:'NTS',n:'Núcleo do trato solitário',m:'Phox2b',nuc:1,ctrl:8,pd:4,tr:7}];
+const GRP={ctrl:{n:'Controle saudável',sh:'controle',c:'#46e08a'},pd:{n:'Parkinson sem tratamento',sh:'sem tratamento',c:'#ff6b6b'},tr:{n:'Parkinson + tratamento da Dra. P',sh:'com tratamento',c:'#ffd166'}};
+const REL={rx:175,ry:118,rot:-.2};
+function inReg(x,y,m=1){const dx=x-FX,dy=y-FY,c=Math.cos(REL.rot),sn=Math.sin(REL.rot),u=(dx*c+dy*sn)/(REL.rx*m),v=(-dx*sn+dy*c)/(REL.ry*m);return u*u+v*v<1}
+function makeField(reg,gk,seed){const R=srand(seed),cells=[],N=reg[gk];let tries=0;
+ const place=inside=>{while(tries++<5000){const a=R()*TAU,r=Math.sqrt(R())*230,x=FX+Math.cos(a)*r,y=FY+Math.sin(a)*r;
+  if(inside?!inReg(x,y,.85):inReg(x,y,1.3))continue;if(cells.some(c=>Math.hypot(c.x-x,c.y-y)<60))continue;
+  cells.push({x,y,out:!inside,found:false,wt:-9,t:genTree(seed*7+cells.length,x,y,{n:4,len:30,depth:1,split:.6,w:2.4,soma:8.5,axon:44,a:cells.length%5===3?.45:R()*.3+.75})});return}};
+ for(let i=0;i<N;i++)place(true);for(let i=0;i<3;i++)place(false);
+ return{reg,gk,N,cells,img:bake(g=>cells.forEach(c=>reg.nuc?drawNuc(g,c,R):drawTree(g,c.t,G,8))),done:false}}
+function drawNuc(g,c,R){const a=c.t.a,rot=R()*TAU;g.save();g.shadowColor=G;g.shadowBlur=10;g.fillStyle=`rgba(70,224,138,${a})`;g.beginPath();g.ellipse(c.x,c.y,7.5,5.8,rot,0,TAU);g.fill();
+ g.shadowBlur=0;g.fillStyle=`rgba(200,255,220,${a*.7})`;g.beginPath();g.ellipse(c.x-1.5,c.y-1,3,2.2,rot,0,TAU);g.fill();g.restore()}
+function startP3(){p3err=0;p3msg=null;fi=0;qi=0;qsel=null;
+ FIELDS=[];REGIONS.forEach((r,i)=>['pd','tr'].forEach((gk,j)=>FIELDS.push(makeField(r,gk,300+i*20+j))));
+ SH=[{n:'Neurônio do preBötC · sem tratamento',c:GRP.pd.c,t:genTree(33,FX,FY,{n:3,len:58,depth:1,split:.5,w:3.4,soma:17,axon:170})},
+     {n:'Neurônio do preBötC · com tratamento',c:GRP.tr.c,t:genTree(21,FX,FY,{n:5,len:84,depth:2,split:.85,w:4.2,soma:20,axon:220})}];
+ SH.forEach(s=>{s.img=bake(g=>drawTree(g,s.t,G,10))});
+ state='p3intro';sceneT=0}
+['p3intro','p3count','p3q','p3concl','p3end'].forEach(s=>UPD[s]=dt=>{p3t+=dt;if(p3msg)p3msg.t-=dt});
+function tapCount(p){const F=FIELDS[fi];if(!inField(p)||F.done)return;let best=null,bd=24;
+ for(const c of F.cells){const d=Math.hypot(c.x-p.x,c.y-p.y);if(d<bd){bd=d;best=c}}
+ if(!best)return;
+ if(best.out){best.wt=p3t;p3err++;p3msg={ok:false,s:`Esse neurônio está fora do ${F.reg.s}! Conte só os que estão dentro da linha tracejada.`,t:99};snd(180,.3,'sawtooth',.06,-60);return}
+ if(!best.found){best.found=true;best.n=F.cells.filter(c=>c.found).length;p3msg=null;snd(700+best.n*20,.06,'sine',.08)}}
+cv.addEventListener('pointerdown',e=>{if(e.btn)return;const p=toCanvas(e);
+ if(state==='p3count')tapCount(p)});
+function sidePanel(tag,title,col){panel(600,30,340,580,.92);txt(tag,616,62,12,col||'#ffb26b','left','bold');return wrap(title,616,94,308,28,24,'#fff','left','900')}
+function drawP3Intro(){
+ drawLab();drawDraP(120,340,.82,true);drawDrB(282,340,.82,true);
+ panel(400,30,540,580,.9);
+ txt('FASE 3 · Analisar os neurônios',424,66,14,'#ffb26b','left','bold');
+ txt('Os neurônios sobreviveram?',424,100,28,'#fff','left','900');let y=132;
+ for(const s of['A Dra. P e o Dr. B fotografaram no microscópio as regiões que controlam a respiração: RTN, preBötC e NTS. Um anticorpo deixou verdes os neurônios de cada região.',
+  'No Parkinson, esses neurônios também podem morrer, e a respiração piora. Será que a substância que a Dra. P injetou na Fase 1 protegeu esses neurônios?',
+  'Vamos comparar camundongos com Parkinson sem tratamento e com o tratamento da Dra. P.'])y=wrap(s,424,y,492,21,15,'#e6eef5')+6;
+ [['1','Contar os neurônios','RTN, preBötC e NTS, com e sem tratamento'],['2','Comparar os grupos','no gráfico, com o controle saudável como referência']].forEach(([n,a,b],i)=>{const yy=y+12+i*44;
+  ctx.fillStyle='#d9822b';circle(440,yy,15);ctx.fill();txt(n,440,yy+6,16,'#fff','center','900');txt(a,466,yy-2,16,'#fff','left','bold');txt(b,466,yy+17,13,'#9fb3c6')});
+ txt('Os dados desta fase são fictícios, criados para aprender a analisar.',424,y+106,12,'#7f9ab3');
+ button('Começar a análise ▶',540,544,260,50,()=>{state='p3count';fi=0;p3msg=null;sceneT=0},'#d9822b');
+}
+function drawP3Count(){
+ const F=FIELDS[fi],G2=GRP[F.gk],n=F.cells.filter(c=>c.found).length;drawScope(F.img,'100 µm');
+ ctx.save();ctx.translate(FX,FY);ctx.rotate(REL.rot);ctx.strokeStyle='rgba(255,255,255,.75)';ctx.lineWidth=2;ctx.setLineDash([8,7]);ell(0,0,REL.rx,REL.ry);ctx.stroke();ctx.setLineDash([]);ctx.restore();
+ ctx.font='bold 13px Inter,system-ui,sans-serif';const lw=ctx.measureText(F.reg.s).width+18;rr(FX-lw/2-40,FY-REL.ry-24,lw,22,11);ctx.fillStyle='rgba(255,255,255,.85)';ctx.fill();txt(F.reg.s,FX-40,FY-REL.ry-8,13,'#1b2733','center','bold');
+ for(const c of F.cells){if(c.found){ctx.strokeStyle='#ffd166';ctx.lineWidth=2.5;circle(c.x,c.y,15);ctx.stroke();rr(c.x+9,c.y-26,22,18,9);ctx.fillStyle='#ffd166';ctx.fill();txt(String(c.n),c.x+20,c.y-13,12,'#1b2733','center','bold')}
+  else if(c.out&&p3t-c.wt<1.5){ctx.strokeStyle='#ff5d5d';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(c.x-10,c.y-10);ctx.lineTo(c.x+10,c.y+10);ctx.moveTo(c.x+10,c.y-10);ctx.lineTo(c.x-10,c.y+10);ctx.stroke()}
+  else if(!c.out&&p3msg&&p3msg.blink&&p3msg.t>0&&Math.sin(p3t*12)>0){ctx.strokeStyle='rgba(255,255,255,.8)';ctx.setLineDash([4,4]);ctx.lineWidth=2;circle(c.x,c.y,18);ctx.stroke();ctx.setLineDash([])}}
+ let y=sidePanel(`ETAPA 1 · CONTAR · FOTO ${fi+1} DE ${FIELDS.length}`,`${F.reg.s} · ${G2.sh}`);
+ txt(F.reg.n,616,y,14,'#cfe3f3','left','bold');txt(`Marcador: ${F.reg.m}`,924,y,13,'#9fb3c6','right');
+ rr(616,y+14,12,12,3);ctx.fillStyle=G2.c;ctx.fill();txt(G2.n,636,y+25,13,G2.c,'left','bold');
+ y=wrap(F.reg.nuc?`O ${F.reg.m} fica só no núcleo: cada pontinho verde é o núcleo de um neurônio. Toque só nos que estão dentro da linha tracejada.`:'Toque só nos neurônios dentro da linha tracejada: é a região que estamos medindo.',616,y+52,308,19,14,'#e6eef5')+4;
+ txt('Neurônios contados',770,y+8,13,'#9fb3c6','center','bold');txt(String(n),770,y+58,50,'#ffd166','center','900');y+=82;
+ for(const r of REGIONS){const a=FIELDS.find(f=>f.reg===r&&f.gk==='pd'),b=FIELDS.find(f=>f.reg===r&&f.gk==='tr');if(!a.done)continue;
+  txt(`${r.s}:`,616,y,13,'#fff','left','bold');txt(`sem trat. ${a.N}`,690,y,13,GRP.pd.c,'left','bold');if(b.done)txt(`com trat. ${b.N}`,800,y,13,GRP.tr.c,'left','bold');y+=20}
+ if(p3msg)wrap(p3msg.s,616,y+4,308,19,14,p3msg.ok?'#9ff0c8':'#ffb3b3','left','bold');
+ if(!F.done)button('Terminei a contagem ✓',650,548,240,50,()=>{const miss=F.cells.filter(c=>!c.out&&!c.found).length;
+   if(miss){p3err++;p3msg={ok:false,blink:true,s:`Ainda faltam ${miss} neurônio${miss>1?'s':''} dentro da região! Os que piscam brilham menos, mas também contam.`,t:2};snd(180,.3,'sawtooth',.06,-60)}
+   else{F.done=true;p3msg={ok:true,s:`Isso! ${F.N} neurônios no ${F.reg.s} (${G2.sh}).`,t:99};[523,659,784].forEach((f,j)=>snd(f,.15,'triangle',.1,0,j*.08))}});
+ else button(fi<FIELDS.length-1?'Próxima foto ▶':'Ver o gráfico ▶',650,548,240,50,()=>{p3msg=null;if(fi<FIELDS.length-1)fi++;else{state='p3q';qi=0;qsel=null;p3t=0}},'#d9822b');
+}
+const P3Q=[
+ {q:'Compare as barras. O que aconteceu com os neurônios da respiração?',o:['O tratamento não fez diferença','Sem tratamento muitos neurônios morreram; com o tratamento, quase todos sobreviveram','O tratamento criou mais neurônios que o controle'],a:1,
+  ok:'Isso! Sem tratamento, o Parkinson matou boa parte dos neurônios do RTN, do preBötC e do NTS. Com o tratamento da Dra. P, o número ficou perto do controle: os neurônios sobreviveram. O asterisco (*) mostra que a queda sem tratamento foi estatisticamente significativa.',
+  no:'Olhe de novo: compare a barra vermelha (sem tratamento) e a amarela (com tratamento) com a verde (controle).',
+  cap:'Neurônios contados em cada região (dados fictícios). O controle saudável é a referência. * = redução estatisticamente significativa em relação ao controle (p < 0,05). Num estudo de verdade, contamos vários cortes de vários animais.'}];
+function axes(x,y,w,h,max,step,yl,xl){ctx.strokeStyle='rgba(230,238,245,.6)';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+h);ctx.lineTo(x+w,y+h);ctx.stroke();
+ for(let v=0;v<=max;v+=step){const yy=y+h-v/max*h;txt(String(v),x-8,yy+4,12,'#9fb3c6','right');ctx.strokeStyle='rgba(230,238,245,.08)';ctx.beginPath();ctx.moveTo(x,yy);ctx.lineTo(x+w,yy);ctx.stroke()}
+ ctx.save();ctx.translate(x-38,y+h/2);ctx.rotate(-Math.PI/2);txt(yl,0,0,13,'#cfe3f3','center','bold');ctx.restore();if(xl)txt(xl,x+w/2,y+h+46,13,'#cfe3f3','center','bold')}
+function drawBars(x,y,w,h){axes(x,y,w,h,10,2,'neurônios contados');const gw=w/3,bw=24;
+ ['ctrl','pd','tr'].forEach((gk,j)=>{ctx.fillStyle=GRP[gk].c;circle(x+12+j*118,y-22,6);ctx.fill();txt(GRP[gk].sh,x+22+j*118,y-17,12,'#e6eef5','left','bold')});
+ REGIONS.forEach((r,i)=>{['ctrl','pd','tr'].forEach((gk,j)=>{const k=ease(clamp(p3t*1.2-i*.2-j*.1)),bh=r[gk]/10*h*k,bx=x+i*gw+gw/2-bw*1.5-4+j*(bw+4);
+   rr(bx,y+h-bh,bw,bh,5);ctx.fillStyle=GRP[gk].c;ctx.fill();if(k>.95){txt(String(r[gk]),bx+bw/2,y+h-bh-6,13,'#fff','center','900');if(r[gk]<r.ctrl*.7)txt('*',bx+bw/2,y+h-bh-16,26,'#fff','center','900')}});
+  txt(r.s,x+i*gw+gw/2,y+h+20,14,'#fff','center','bold')})}
+function drawP3Q(){
+ drawLab();ctx.fillStyle='rgba(13,22,31,.55)';ctx.fillRect(0,0,W,H);const Q=P3Q[qi];
+ panel(20,20,450,600,.92);txt('ETAPA 2 · RESULTADO',44,54,12,'#ffb26b','left','bold');txt('Contagem de neurônios',44,86,22,'#fff','left','900');
+ drawBars(96,130,350,300);
+ wrap(Q.cap,44,526,402,18,13,'#9fb3c6');
+ panel(490,20,450,600,.92);txt('O QUE OS DADOS MOSTRAM?',514,54,12,'#ffb26b','left','bold');
+ const y=wrap(Q.q,514,88,402,27,21,'#fff','left','900'),answered=qsel===Q.a;
+ Q.o.forEach((o,i)=>{const yy=Math.max(y+10,160)+i*72,b={x:514,y:yy,w:402,h:62,fn:()=>{if(answered)return;qsel=i;if(i===Q.a)[523,659,784].forEach((f,j)=>snd(f,.15,'triangle',.1,0,j*.08));else{p3err++;snd(180,.35,'sawtooth',.06,-60)}}};
+  buttons.push(b);const hov=hit(b,mouse)&&!answered,st=qsel===i?(i===Q.a?1:2):0;
+  rr(b.x,b.y,b.w,b.h,14);ctx.fillStyle=st===1?'rgba(47,179,122,.35)':st===2?'rgba(192,80,77,.35)':hov?'#2f4558':'#1d2d3c';ctx.fill();
+  ctx.strokeStyle=st===1?'#5ee0a0':st===2?'#ff5d5d':'rgba(127,154,179,.5)';ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle=st===1?'#5ee0a0':st===2?'#ff5d5d':'#3b5670';circle(b.x+26,b.y+31,14);ctx.fill();txt('ABC'[i],b.x+26,b.y+37,15,'#fff','center','bold');
+  wrap(o,b.x+50,o.length>40?b.y+26:b.y+37,340,19,15,'#fff','left','bold')});
+ if(qsel!==null)wrap(qsel===Q.a?Q.ok:Q.no,514,404,402,20,15,qsel===Q.a?'#9ff0c8':'#ffb3b3','left','bold');
+ if(answered)button('Ver a conclusão ▶',565,548,300,50,()=>{state='p3concl';p3t=0},'#d9822b');
+}
+function drawP3End(){
+ drawUSP();panel(150,24,660,592,.9);
+ txt('Você completou o jogo!',480,74,36,'#fff','center','900');
+ const stars=p3err<=1?3:p3err<=4?2:1;for(let i=0;i<3;i++){ctx.fillStyle=i<stars?'#fcb421':'#2a3c4e';star(420+i*60,116,20)}
+ txt(`Fase 3 · erros na análise: ${p3err}`,480,160,14,'#9fb3c6','center');
+ ctx.save();rr(330,176,300,120,12);ctx.clip();ctx.fillStyle='rgba(43,68,89,.6)';ctx.fillRect(330,176,300,120);drawDraP(410,226,.42,true);drawDrB(550,226,.42,true);ctx.restore();
+ [['#2fb37a','Fase 1','A Dra. P acertou os circuitos da respiração com a estereotaxia.'],['#7b5cd6','Fase 2','O Dr. B coloriu o cérebro com anticorpos fluorescentes.'],['#d9822b','Fase 3','O tratamento evitou a morte dos neurônios da respiração.']].forEach(([c,a,b],i)=>{const y=330+i*34;
+  ctx.fillStyle=c;circle(200,y-5,8);ctx.fill();txt(a,216,y,15,c,'left','900');txt(b,276,y,14,'#e6eef5','left','bold')});
+ txt('O caminho da ciência',480,450,16,'#ffd166','center','bold');
+ txt('pergunta  →  experimento  →  análise  →  conclusão',480,476,15,'#e6eef5','center','bold');
+ wrap('Obrigado por ajudar a Dra. P e o Dr. B no ICB-USP! Quem sabe um dia você também faz ciência aqui?',480,506,560,18,14,'#9fb3c6','center');
+ button('Jogar de novo ↺',220,548,250,50,startP3);button('Tela inicial',490,548,250,50,()=>{state='title'},'#3b5670');
+}
+function drawP3Concl(){
+ ctx.fillStyle='#070b10';ctx.fillRect(0,0,W,H);
+ txt('CONCLUSÃO DO EXPERIMENTO',480,50,13,'#ffb26b','center','bold');
+ txt('O neurônio não morreu!',480,92,38,'#fff','center','900');
+ txt('Você preveniu a morte dele.',480,124,20,'#ffd166','center','bold');
+ const views=[[250,SH[0],'Sem tratamento','o neurônio perde os ramos e morre',GRP.pd.c,.28+.12*Math.sin(p3t*2)],[710,SH[1],'Com o tratamento da Dra. P','o neurônio continua vivo e ramificado',GRP.tr.c,.95]];
+ for(const[cx,S,a,b,c,al]of views){const cy=280,R=118;ctx.save();circle(cx,cy,R);ctx.clip();ctx.fillStyle='#010203';ctx.fillRect(cx-R,cy-R,2*R,2*R);
+  ctx.globalAlpha=al;ctx.drawImage(S.img,FX-170,FY-170,340,340,cx-R,cy-R,2*R,2*R);ctx.restore();
+  ctx.strokeStyle=c;ctx.lineWidth=5;circle(cx,cy,R+6);ctx.stroke();txt(a,cx,cy+R+34,17,c,'center','900');txt(b,cx,cy+R+56,14,'#cfe3f3','center')}
+ const k=(p3t*.6)%1;ctx.fillStyle='#ffd166';ctx.globalAlpha=1-k;circle(390+k*180,280,7);ctx.fill();ctx.globalAlpha=1;
+ ctx.strokeStyle='#ffd166';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(392,280);ctx.lineTo(560,280);ctx.lineTo(546,268);ctx.moveTo(560,280);ctx.lineTo(546,292);ctx.stroke();txt('tratamento',480,262,14,'#ffd166','center','bold');
+ panel(40,462,880,82,.9);
+ wrap('No Parkinson, os neurônios do RTN, do preBötC e do NTS também morrem, e a respiração piora. A substância que a Dra. P injetou na Fase 1 protegeu esses neurônios: eles continuaram vivos e ramificados, e por isso os camundongos voltaram a respirar melhor.',480,488,840,20,15,'#e6eef5','center');
+ if(p3t>1.5)button('Finalizar ▶',360,560,240,50,()=>{state='p3end';sceneT=0},'#d9822b');
+}
+Object.assign(SCREENS,{p3concl:drawP3Concl,p3intro:drawP3Intro,p3count:drawP3Count,p3q:drawP3Q,p3end:drawP3End});
+</script>
+</body>
+</html>
